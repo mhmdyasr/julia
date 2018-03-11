@@ -263,7 +263,7 @@ function isinlineable(m::Method, src::CodeInfo, mod::Module, params::Params, bon
     return inlineable
 end
 
-const enable_new_optimizer = RefValue(false)
+const enable_new_optimizer = RefValue(true)
 
 # converge the optimization work
 function optimize(me::InferenceState)
@@ -924,7 +924,9 @@ function effect_free(@nospecialize(e), src, mod::Module, allow_volatile::Bool)
             end
             fieldcount(typ) >= length(ea) - 1 || return false
             for fld_idx in 1:(length(ea) - 1)
-                exprtype(ea[fld_idx + 1], src, mod) ⊑ fieldtype(typ, fld_idx) || return false
+                eT = exprtype(ea[fld_idx + 1], src, mod)
+                fT = fieldtype(typ, fld_idx)
+                eT ⊑ fT || return false
             end
             # fall-through
         elseif head === :return
