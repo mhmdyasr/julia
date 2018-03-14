@@ -285,7 +285,6 @@ function optimize(me::InferenceState)
         # if we start to create `SSAValue` in type inference when not
         # optimizing and use unoptimized IR in codegen.
         gotoifnot_elim_pass!(opt)
-        inlining_pass!(opt, opt.src.propagate_inbounds)
         any_enter = any_phi = false
         if enable_new_optimizer[]
             any_enter = any(x->isa(x, Expr) && x.head == :enter, opt.src.code)
@@ -300,11 +299,12 @@ function optimize(me::InferenceState)
                 topline = LineInfoNode(opt.mod, NullLineInfo.name, NullLineInfo.file, 0, 0)
             end
             linetable = [topline]
-            ir = run_passes(opt.src, nargs, linetable)
-            replace_code!(opt.src, ir, nargs, linetable)
+            @timeit "optimizer" ir = run_passes(opt.src, nargs, linetable)
+            @timeit "legacy conversion" replace_code!(opt.src, ir, nargs, linetable)
             push!(opt.src.code, LabelNode(length(opt.src.code) + 1))
             any_phi = true
         elseif !any_phi
+            inlining_pass!(opt, opt.src.propagate_inbounds)
             # Clean up after inlining
             gotoifnot_elim_pass!(opt)
             basic_dce_pass!(opt)
