@@ -246,6 +246,7 @@ jl_code_info_t *jl_type_infer(jl_method_instance_t **pli, size_t world, int forc
     static int in_inference;
     if (in_inference > 2)
         return NULL;
+    //jl_(*pli);
 #ifdef ENABLE_INFERENCE
     jl_method_instance_t *li = *pli;
     if (li->inInference && !force)

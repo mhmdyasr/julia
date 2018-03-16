@@ -1,7 +1,5 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
-include("compiler/ssair/driver.jl")
-
 #####################
 # OptimizationState #
 #####################
@@ -70,6 +68,8 @@ function OptimizationState(linfo::MethodInstance, params::Params)
     src === nothing && return nothing
     return OptimizationState(linfo, src, params)
 end
+
+include("compiler/ssair/driver.jl")
 
 _topmod(sv::OptimizationState) = _topmod(sv.mod)
 
@@ -299,7 +299,7 @@ function optimize(me::InferenceState)
                 topline = LineInfoNode(opt.mod, NullLineInfo.name, NullLineInfo.file, 0, 0)
             end
             linetable = [topline]
-            @timeit "optimizer" ir = run_passes(opt.src, nargs, linetable)
+            @timeit "optimizer" ir = run_passes(opt.src, nargs, linetable, opt)
             @timeit "legacy conversion" replace_code!(opt.src, ir, nargs, linetable)
             push!(opt.src.code, LabelNode(length(opt.src.code) + 1))
             any_phi = true
@@ -1500,7 +1500,7 @@ function inlineable(@nospecialize(f), @nospecialize(ft), e::Expr, atypes::Vector
                     end
                 end
                 edges = Any[newlabels[edge::Int + 1] - 1 for edge in edges]
-                a.args[2] = PhiNode(edges, a.args[2].values)
+                a.args[2] = PhiNode(edges, copy_exprargs(a.args[2].values))
             elseif a.head === :meta && length(a.args) > 0
                 a1 = a.args[1]
                 if a1 === :push_loc
