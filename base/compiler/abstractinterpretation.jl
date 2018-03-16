@@ -764,7 +764,11 @@ function abstract_eval(@nospecialize(e), vtypes::VarTable, sv::InferenceState)
         if 1 <= n <= length(sv.sp)
             val = sv.sp[n]
             if isa(val, TypeVar)
-                if Any <: val.ub
+                ub = val.ub
+                while isa(ub, TypeVar)
+                    ub = ub.ub
+                end
+                if Any <: ub
                     # static param bound to typevar
                     # if the tvar is not known to refer to anything more specific than Any,
                     # the static param might actually be an integer, symbol, etc.
