@@ -383,7 +383,7 @@ julia> i = 1;
 
 julia> while i <= 5
            println(i)
-           i += 1
+           global i += 1
        end
 1
 2
@@ -471,7 +471,7 @@ julia> while true
            if i >= 5
                break
            end
-           i += 1
+           global i += 1
        end
 1
 2
@@ -527,7 +527,25 @@ julia> for i = 1:2, j = 3:4
 (2, 4)
 ```
 
-A `break` statement inside such a loop exits the entire nest of loops, not just the inner one.
+With this syntax, iterables may still refer to outer loop variables; e.g. `for i = 1:n, j = 1:i`
+is valid.
+However a `break` statement inside such a loop exits the entire nest of loops, not just the inner one.
+Both variables (`i` and `j`) are set to their current iteration values each time the inner loop runs.
+Therefore, assignments to `i` will not be visible to subsequent iterations:
+
+```jldoctest
+julia> for i = 1:2, j = 3:4
+           println((i, j))
+           i = 0
+       end
+(1, 3)
+(1, 4)
+(2, 3)
+(2, 4)
+```
+
+If this example were rewritten to use a `for` keyword for each variable, then the output would
+be different: the second and fourth values would contain `0`.
 
 ## Exception Handling
 
@@ -545,7 +563,7 @@ below all interrupt the normal flow of control.
 |:----------------------------- |
 | [`ArgumentError`](@ref)       |
 | [`BoundsError`](@ref)         |
-| `CompositeException`          |
+| [`CompositeException`](@ref)  |
 | [`DivideError`](@ref)         |
 | [`DomainError`](@ref)         |
 | [`EOFError`](@ref)            |
@@ -566,7 +584,7 @@ below all interrupt the normal flow of control.
 | [`TypeError`](@ref)           |
 | [`UndefRefError`](@ref)       |
 | [`UndefVarError`](@ref)       |
-| `UnicodeError`                |
+| [`StringIndexError`](@ref)    |
 
 For example, the [`sqrt`](@ref) function throws a [`DomainError`](@ref) if applied to a negative
 real value:
@@ -699,30 +717,27 @@ Stacktrace:
 
 ### The `try/catch` statement
 
-The `try/catch` statement allows for `Exception`s to be tested for. For example, a customized
-square root function can be written to automatically call either the real or complex square root
-method on demand using `Exception`s :
+The `try/catch` statement allows for `Exception`s to be tested for, and for the
+graceful handling of things that may ordinarily break your application. For example,
+in the below code the function for square root would normally throw an exception. By
+placing a `try/catch` block around it we can mitigate that here. You may choose how
+you wish to handle this exception, whether logging it, return a placeholder value or
+as in the case below where we just printed out a statement. One thing to think about
+when deciding how to handle unexpected situations is that using a `try/catch` block is
+much slower than using conditional branching to handle those situations.
+Below there are more examples of handling exceptions with a `try/catch` block:
 
 ```jldoctest
-julia> f(x) = try
-           sqrt(x)
-       catch
-           sqrt(complex(x, 0))
+julia> try
+           sqrt("ten")
+       catch e
+           println("You should have entered a numeric value")
        end
-f (generic function with 1 method)
-
-julia> f(1)
-1.0
-
-julia> f(-1)
-0.0 + 1.0im
+You should have entered a numeric value
 ```
 
-It is important to note that in real code computing this function, one would compare `x` to zero
-instead of catching an exception. The exception is much slower than simply comparing and branching.
-
-`try/catch` statements also allow the `Exception` to be saved in a variable. In this contrived
-example, the following example calculates the square root of the second element of `x` if `x`
+`try/catch` statements also allow the `Exception` to be saved in a variable. The following
+contrived example calculates the square root of the second element of `x` if `x`
 is indexable, otherwise assumes `x` is a real number and returns its square root:
 
 ```jldoctest
@@ -772,17 +787,11 @@ catch
 end
 ```
 
-The `catch` clause is not strictly necessary; when omitted, the default return value is `nothing`.
-
-```jldoctest
-julia> try error() end # Returns nothing
-```
-
 The power of the `try/catch` construct lies in the ability to unwind a deeply nested computation
 immediately to a much higher level in the stack of calling functions. There are situations where
 no error has occurred, but the ability to unwind the stack and pass a value to a higher level
-is desirable. Julia provides the [`rethrow`](@ref), [`backtrace`](@ref) and [`catch_backtrace`](@ref)
-functions for more advanced error handling.
+is desirable. Julia provides the [`rethrow`](@ref), [`backtrace`](@ref), [`catch_backtrace`](@ref)
+and [`Base.catch_stack`](@ref) functions for more advanced error handling.
 
 ### `finally` Clauses
 
@@ -918,7 +927,7 @@ True kernel threads are discussed under the topic of [Parallel Computing](@ref).
 
 ### Core task operations
 
-Let us explore the low level construct [`yieldto`](@ref) to underestand how task switching works.
+Let us explore the low level construct [`yieldto`](@ref) to understand how task switching works.
 `yieldto(task,value)` suspends the current task, switches to the specified `task`, and causes
 that task's last [`yieldto`](@ref) call to return the specified `value`. Notice that [`yieldto`](@ref)
 is the only operation required to use task-style control flow; instead of calling and returning
@@ -962,8 +971,8 @@ A task created explicitly by calling [`Task`](@ref) is initially not known to th
 allows you to manage tasks manually using [`yieldto`](@ref) if you wish. However, when such
 a task waits for an event, it still gets restarted automatically when the event happens, as you
 would expect. It is also possible to make the scheduler run a task whenever it can, without necessarily
-waiting for any events. This is done by calling [`schedule`](@ref), or using the [`@schedule`](@ref)
-or [`@async`](@ref) macros (see [Parallel Computing](@ref) for more details).
+waiting for any events. This is done by calling [`schedule`](@ref), or using the [`@async`](@ref)
+macro (see [Parallel Computing](@ref) for more details).
 
 ### Task states
 
@@ -972,8 +981,6 @@ symbols:
 
 | Symbol      | Meaning                                            |
 |:----------- |:-------------------------------------------------- |
-| `:runnable` | Currently running, or available to be switched to  |
-| `:waiting`  | Blocked waiting for a specific event               |
-| `:queued`   | In the scheduler's run queue about to be restarted |
+| `:runnable` | Currently running, or able to run                  |
 | `:done`     | Successfully finished executing                    |
 | `:failed`   | Finished with an uncaught exception                |

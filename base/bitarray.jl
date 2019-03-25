@@ -5,9 +5,16 @@
 # notes: bits are stored in contiguous chunks
 #        unused bits must always be set to 0
 """
-    BitArray{N} <: DenseArray{Bool, N}
+    BitArray{N} <: AbstractArray{Bool, N}
 
-Space-efficient `N`-dimensional boolean array, which stores one bit per boolean value.
+Space-efficient `N`-dimensional boolean array, using just one bit for each boolean value.
+
+`BitArray`s pack up to 64 values into every 8 bytes, resulting in an 8x space efficiency
+over `Array{Bool, N}` and allowing some operations to work on 64 values at once.
+
+By default, Julia returns `BitArrays` from [broadcasting](@ref Broadcasting) operations
+that generate boolean elements (including dotted-comparisons like `.==`) as well as from
+the functions [`trues`](@ref) and [`falses`](@ref).
 """
 mutable struct BitArray{N} <: AbstractArray{Bool, N}
     chunks::Vector{UInt64}
@@ -56,8 +63,8 @@ julia> BitArray(undef, (3, 1))
 """
 BitArray(::UndefInitializer, dims::Integer...) = BitArray(undef, map(Int,dims))
 BitArray{N}(::UndefInitializer, dims::Integer...) where {N} = BitArray{N}(undef, map(Int,dims))
-BitArray(::UndefInitializer, dims::NTuple{N,Int}) where {N} = BitArray{N}(undef, dims...)
-BitArray{N}(::UndefInitializer, dims::NTuple{N,Int}) where {N} = BitArray{N}(undef, dims...)
+BitArray(::UndefInitializer, dims::NTuple{N,Integer}) where {N} = BitArray{N}(undef, map(Int, dims)...)
+BitArray{N}(::UndefInitializer, dims::NTuple{N,Integer}) where {N} = BitArray{N}(undef, map(Int, dims)...)
 
 const BitVector = BitArray{1}
 const BitMatrix = BitArray{2}
@@ -70,7 +77,7 @@ length(B::BitArray) = B.len
 size(B::BitVector) = (B.len,)
 size(B::BitArray) = B.dims
 
-@inline function size(B::BitVector, d)
+@inline function size(B::BitVector, d::Integer)
     d < 1 && throw_boundserror(size(B), d)
     ifelse(d == 1, B.len, 1)
 end
@@ -84,6 +91,7 @@ IndexStyle(::Type{<:BitArray}) = IndexLinear()
 const _msk64 = ~UInt64(0)
 @inline _div64(l) = l >> 6
 @inline _mod64(l) = l & 63
+@inline _blsr(x)= x & (x-1) #zeros the last set bit. Has native instruction on many archs. needed in multidimensional.jl
 @inline _msk_end(l::Integer) = _msk64 >>> _mod64(-l)
 @inline _msk_end(B::BitArray) = _msk_end(length(B))
 num_bit_chunks(n::Int) = _div64(n+63)
@@ -323,9 +331,10 @@ dumpbitcache(Bc::Vector{UInt64}, bind::Int, C::Vector{Bool}) =
 
 
 ## custom iterator ##
-start(B::BitArray) = 0
-next(B::BitArray, i::Int) = (B.chunks[_div64(i)+1] & (UInt64(1)<<_mod64(i)) != 0, i+1)
-done(B::BitArray, i::Int) = i >= length(B)
+function iterate(B::BitArray, i::Int=0)
+    i >= length(B) && return nothing
+    (B.chunks[_div64(i)+1] & (UInt64(1)<<_mod64(i)) != 0, i+1)
+end
 
 ## similar, fill!, copy! etc ##
 
@@ -337,8 +346,6 @@ similar(B::BitArray, T::Type{Bool}, dims::Dims) = BitArray(undef, dims)
 # changing type to a non-Bool returns an Array
 # (this triggers conversions like float(bitvector) etc.)
 similar(B::BitArray, T::Type, dims::Dims) = Array{T}(undef, dims)
-
-similar(::Type{T}, shape::Tuple) where {T<:BitArray} = T(undef, to_shape(shape))
 
 function fill!(B::BitArray, x)
     y = convert(Bool, x)
@@ -362,12 +369,14 @@ Create a `BitArray` with all values set to `false`.
 ```jldoctest
 julia> falses(2,3)
 2×3 BitArray{2}:
- false  false  false
- false  false  false
+ 0  0  0
+ 0  0  0
 ```
 """
-falses(dims::Dims) = fill!(BitArray(undef, dims), false)
-falses(dims::Integer...) = falses(map(Int,dims))
+falses(dims::DimOrInd...) = falses(dims)
+falses(dims::NTuple{N, Union{Integer, OneTo}}) where {N} = falses(map(to_dim, dims))
+falses(dims::NTuple{N, Integer}) where {N} = fill!(BitArray(undef, dims), false)
+falses(dims::Tuple{}) = fill!(BitArray(undef, dims), false)
 
 """
     trues(dims)
@@ -378,12 +387,14 @@ Create a `BitArray` with all values set to `true`.
 ```jldoctest
 julia> trues(2,3)
 2×3 BitArray{2}:
- true  true  true
- true  true  true
+ 1  1  1
+ 1  1  1
 ```
 """
-trues(dims::Dims) = fill!(BitArray(undef, dims), true)
-trues(dims::Integer...) = trues(map(Int,dims))
+trues(dims::DimOrInd...) = trues(dims)
+trues(dims::NTuple{N, Union{Integer, OneTo}}) where {N} = trues(map(to_dim, dims))
+trues(dims::NTuple{N, Integer}) where {N} = fill!(BitArray(undef, dims), true)
+trues(dims::Tuple{}) = fill!(BitArray(undef, dims), true)
 
 function one(x::BitMatrix)
     m, n = size(x)
@@ -500,6 +511,7 @@ reinterpret(B::BitArray, dims::NTuple{N,Int}) where {N} = reshape(B, dims)
 
 if nameof(@__MODULE__) === :Base  # avoid method overwrite
 (::Type{T})(x::T) where {T<:BitArray} = copy(x)
+BitArray(x::BitArray) = copy(x)
 end
 
 """
@@ -512,22 +524,22 @@ The shape is inferred from the `itr` object.
 ```jldoctest
 julia> BitArray([1 0; 0 1])
 2×2 BitArray{2}:
-  true  false
- false   true
+ 1  0
+ 0  1
 
 julia> BitArray(x+y == 3 for x = 1:2, y = 1:3)
 2×3 BitArray{2}:
- false   true  false
-  true  false  false
+ 0  1  0
+ 1  0  0
 
 julia> BitArray(x+y == 3 for x = 1:2 for y = 1:3)
 6-element BitArray{1}:
- false
-  true
- false
-  true
- false
- false
+ 0
+ 1
+ 0
+ 1
+ 0
+ 0
 ```
 """
 BitArray(itr) = gen_bitarray(IteratorSize(itr), itr)
@@ -536,7 +548,7 @@ convert(T::Type{<:BitArray}, a::AbstractArray) = a isa T ? a : T(a)
 
 # generic constructor from an iterable without compile-time info
 # (we pass start(itr) explicitly to avoid a type-instability with filters)
-gen_bitarray(isz::IteratorSize, itr) = gen_bitarray_from_itr(itr, start(itr))
+gen_bitarray(isz::IteratorSize, itr) = gen_bitarray_from_itr(itr)
 
 # generic iterable with known shape
 function gen_bitarray(::HasShape, itr)
@@ -550,11 +562,11 @@ end
 # generator with known shape or length
 function gen_bitarray(::HasShape, itr::Generator)
     B = BitArray(undef, size(itr))
-    return fill_bitarray_from_itr!(B, itr, start(itr))
+    return fill_bitarray_from_itr!(B, itr)
 end
 function gen_bitarray(::HasLength, itr)
     b = BitVector(undef, length(itr))
-    return fill_bitarray_from_itr!(b, itr, start(itr))
+    return fill_bitarray_from_itr!(b, itr)
 end
 
 gen_bitarray(::IsInfinite, itr) =  throw(ArgumentError("infinite-size iterable used in BitArray constructor"))
@@ -562,14 +574,15 @@ gen_bitarray(::IsInfinite, itr) =  throw(ArgumentError("infinite-size iterable u
 # The aux functions gen_bitarray_from_itr and fill_bitarray_from_itr! both
 # use a Vector{Bool} cache for performance reasons
 
-function gen_bitarray_from_itr(itr, st)
+function gen_bitarray_from_itr(itr)
     B = empty!(BitVector(undef, bitcache_size))
     C = Vector{Bool}(undef, bitcache_size)
     Bc = B.chunks
     ind = 1
     cind = 1
-    while !done(itr, st)
-        x, st = next(itr, st)
+    y = iterate(itr)
+    while y !== nothing
+        x, st = y
         @inbounds C[ind] = x
         ind += 1
         if ind > bitcache_size
@@ -578,23 +591,25 @@ function gen_bitarray_from_itr(itr, st)
             cind += bitcache_chunks
             ind = 1
         end
+        y = iterate(itr, st)
     end
     if ind > 1
-        @inbounds C[ind:bitcache_size] = false
+        @inbounds C[ind:bitcache_size] .= false
         resize!(B, length(B) + ind - 1)
         dumpbitcache(Bc, cind, C)
     end
     return B
 end
 
-function fill_bitarray_from_itr!(B::BitArray, itr, st)
+function fill_bitarray_from_itr!(B::BitArray, itr)
     n = length(B)
     C = Vector{Bool}(undef, bitcache_size)
     Bc = B.chunks
     ind = 1
     cind = 1
-    while !done(itr, st)
-        x, st = next(itr, st)
+    y = iterate(itr)
+    while y !== nothing
+        x, st = y
         @inbounds C[ind] = x
         ind += 1
         if ind > bitcache_size
@@ -602,9 +617,10 @@ function fill_bitarray_from_itr!(B::BitArray, itr, st)
             cind += bitcache_chunks
             ind = 1
         end
+        y = iterate(itr, st)
     end
     if ind > 1
-        @inbounds C[ind:bitcache_size] = false
+        @inbounds C[ind:bitcache_size] .= false
         dumpbitcache(Bc, cind, C)
     end
     return B
@@ -649,42 +665,8 @@ end
 indexoffset(i) = first(i)-1
 indexoffset(::Colon) = 0
 
-@inline function setindex!(B::BitArray, x, J0::Union{Colon,UnitRange{Int}})
-    I0 = to_indices(B, (J0,))[1]
-    @boundscheck checkbounds(B, I0)
-    y = Bool(x)
-    l0 = length(I0)
-    l0 == 0 && return B
-    f0 = indexoffset(I0)+1
-    fill_chunks!(B.chunks, y, f0, l0)
-    return B
-end
 @propagate_inbounds function setindex!(B::BitArray, X::AbstractArray, J0::Union{Colon,UnitRange{Int}})
     _setindex!(IndexStyle(B), B, X, to_indices(B, (J0,))[1])
-end
-
-# logical indexing
-
-# When indexing with a BitArray, we can operate whole chunks at a time for a ~100x gain
-@inline function setindex!(B::BitArray, x, I::BitArray)
-    @boundscheck checkbounds(B, I)
-    _unsafe_setindex!(B, x, I)
-end
-function _unsafe_setindex!(B::BitArray, x, I::BitArray)
-    y = convert(Bool, x)
-    Bc = B.chunks
-    Ic = I.chunks
-    length(Bc) == length(Ic) || throw_boundserror(B, I)
-    @inbounds if y
-        for i = 1:length(Bc)
-            Bc[i] |= Ic[i]
-        end
-    else
-        for i = 1:length(Bc)
-            Bc[i] &= ~Ic[i]
-        end
-    end
-    return B
 end
 
 # Assigning an array of bools is more complicated, but we can still do some
@@ -733,7 +715,7 @@ function push!(B::BitVector, item)
 
     l = _mod64(length(B))
     if l == 0
-        ccall(:jl_array_grow_end, Cvoid, (Any, UInt), Bc, 1)
+        _growend!(Bc, 1)
         Bc[end] = UInt64(0)
     end
     B.len += 1
@@ -751,7 +733,7 @@ function append!(B::BitVector, items::BitVector)
     k0 = length(Bc)
     k1 = num_bit_chunks(n0 + n1)
     if k1 > k0
-        ccall(:jl_array_grow_end, Cvoid, (Any, UInt), Bc, k1 - k0)
+        _growend!(Bc, k1 - k0)
         Bc[end] = UInt64(0)
     end
     B.len += n1
@@ -759,7 +741,7 @@ function append!(B::BitVector, items::BitVector)
     return B
 end
 
-append!(B::BitVector, items::AbstractVector{Bool}) = append!(B, BitArray(items))
+append!(B::BitVector, items) = append!(B, BitArray(items))
 append!(A::Vector{Bool}, items::BitVector) = append!(A, Array(items))
 
 function prepend!(B::BitVector, items::BitVector)
@@ -770,7 +752,7 @@ function prepend!(B::BitVector, items::BitVector)
     k0 = length(Bc)
     k1 = num_bit_chunks(n0 + n1)
     if k1 > k0
-        ccall(:jl_array_grow_end, Cvoid, (Any, UInt), Bc, k1 - k0)
+        _growend!(Bc, k1 - k0)
         Bc[end] = UInt64(0)
     end
     B.len += n1
@@ -779,7 +761,7 @@ function prepend!(B::BitVector, items::BitVector)
     return B
 end
 
-prepend!(B::BitVector, items::AbstractVector{Bool}) = prepend!(B, BitArray(items))
+prepend!(B::BitVector, items) = prepend!(B, BitArray(items))
 prepend!(A::Vector{Bool}, items::BitVector) = prepend!(A, Array(items))
 
 function sizehint!(B::BitVector, sz::Integer)
@@ -799,7 +781,7 @@ function resize!(B::BitVector, n::Integer)
     k0 = length(Bc)
     k1 = num_bit_chunks(Int(n))
     if k1 > k0
-        ccall(:jl_array_grow_end, Cvoid, (Any, UInt), Bc, k1 - k0)
+        _growend!(Bc, k1 - k0)
         Bc[end] = UInt64(0)
     end
     B.len = n
@@ -812,7 +794,7 @@ function pop!(B::BitVector)
     B[end] = false
 
     l = _mod64(length(B))
-    l == 1 && ccall(:jl_array_del_end, Cvoid, (Any, UInt), B.chunks, 1)
+    l == 1 && _deleteend!(B.chunks, 1)
     B.len -= 1
 
     return item
@@ -825,7 +807,7 @@ function pushfirst!(B::BitVector, item)
 
     l = _mod64(length(B))
     if l == 0
-        ccall(:jl_array_grow_end, Cvoid, (Any, UInt), Bc, 1)
+        _growend!(Bc, 1)
         Bc[end] = UInt64(0)
     end
     B.len += 1
@@ -853,7 +835,7 @@ function popfirst!(B::BitVector)
 
         l = _mod64(length(B))
         if l == 1
-            ccall(:jl_array_del_end, Cvoid, (Any, UInt), Bc, 1)
+            _deleteend!(Bc, 1)
         else
             Bc[end] >>>= 1
         end
@@ -874,7 +856,7 @@ function insert!(B::BitVector, i::Integer, item)
 
     l = _mod64(length(B))
     if l == 0
-        ccall(:jl_array_grow_end, Cvoid, (Any, UInt), Bc, 1)
+        _growend!(Bc, 1)
         Bc[end] = UInt64(0)
     end
     B.len += 1
@@ -912,7 +894,7 @@ function _deleteat!(B::BitVector, i::Integer)
         l = _mod64(length(B))
 
         if l == 1
-            ccall(:jl_array_del_end, Cvoid, (Any, UInt), Bc, 1)
+            _deleteend!(Bc, 1)
         elseif length(Bc) > k
             Bc[end] >>>= 1
         end
@@ -943,7 +925,7 @@ function deleteat!(B::BitVector, r::UnitRange{Int})
 
     copy_chunks!(Bc, i_f, Bc, i_l+1, n-i_l)
 
-    delta_k < 0 && ccall(:jl_array_del_end, Cvoid, (Any, UInt), Bc, -delta_k)
+    delta_k < 0 && _deleteend!(Bc, -delta_k)
 
     B.len = new_l
 
@@ -956,16 +938,18 @@ end
 
 function deleteat!(B::BitVector, inds)
     n = new_l = length(B)
-    s = start(inds)
-    done(inds, s) && return B
+    y = iterate(inds)
+    y === nothing && return B
+    n == 0 && throw(BoundsError(B, inds))
 
     Bc = B.chunks
 
-    (p, s) = next(inds, s)
+    (p, s) = y
     q = p+1
     new_l -= 1
-    while !done(inds, s)
-        (i,s) = next(inds, s)
+    y = iterate(inds, s)
+    while y !== nothing
+        (i, s) = y
         if !(q <= i <= n)
             i < q && throw(ArgumentError("indices must be unique and sorted"))
             throw(BoundsError(B, i))
@@ -976,12 +960,13 @@ function deleteat!(B::BitVector, inds)
             p += i-q
         end
         q = i+1
+        y = iterate(inds, s)
     end
 
     q <= n && copy_chunks!(Bc, p, Bc, q, n-q+1)
 
     delta_k = num_bit_chunks(new_l) - length(Bc)
-    delta_k < 0 && ccall(:jl_array_del_end, Cvoid, (Any, UInt), Bc, -delta_k)
+    delta_k < 0 && _deleteend!(Bc, -delta_k)
 
     B.len = new_l
 
@@ -1028,12 +1013,12 @@ function splice!(B::BitVector, r::Union{UnitRange{Int}, Integer}, ins::AbstractA
     new_l = length(B) + lins - ldel
     delta_k = num_bit_chunks(new_l) - length(Bc)
 
-    delta_k > 0 && ccall(:jl_array_grow_end, Cvoid, (Any, UInt), Bc, delta_k)
+    delta_k > 0 && _growend!(Bc, delta_k)
 
     copy_chunks!(Bc, i_f+lins, Bc, i_l+1, n-i_l)
     copy_chunks!(Bc, i_f, Bins.chunks, 1, lins)
 
-    delta_k < 0 && ccall(:jl_array_del_end, Cvoid, (Any, UInt), Bc, -delta_k)
+    delta_k < 0 && _deleteend!(Bc, -delta_k)
 
     B.len = new_l
 
@@ -1056,7 +1041,7 @@ end
 
 
 function empty!(B::BitVector)
-    ccall(:jl_array_del_end, Cvoid, (Any, UInt), B.chunks, length(B.chunks))
+    _deleteend!(B.chunks, length(B.chunks))
     B.len = 0
     return B
 end
@@ -1091,64 +1076,20 @@ function (-)(B::BitArray)
     end
     return A
 end
-broadcast(::typeof(sign), B::BitArray) = copy(B)
-
-function broadcast(::typeof(~), B::BitArray)
-    C = similar(B)
-    Bc = B.chunks
-    if !isempty(Bc)
-        Cc = C.chunks
-        for i = 1:length(Bc)
-            Cc[i] = ~Bc[i]
-        end
-        Cc[end] &= _msk_end(B)
-    end
-    return C
-end
-
-"""
-    flipbits!(B::BitArray{N}) -> BitArray{N}
-
-Performs a bitwise not operation on `B`. See [`~`](@ref).
-
-# Examples
-```jldoctest
-julia> A = trues(2,2)
-2×2 BitArray{2}:
- true  true
- true  true
-
-julia> flipbits!(A)
-2×2 BitArray{2}:
- false  false
- false  false
-```
-"""
-function flipbits!(B::BitArray)
-    Bc = B.chunks
-    @inbounds if !isempty(Bc)
-        for i = 1:length(Bc)
-            Bc[i] = ~Bc[i]
-        end
-        Bc[end] &= _msk_end(B)
-    end
-    return B
-end
-
 
 ## Binary arithmetic operators ##
 
 for f in (:+, :-)
     @eval function ($f)(A::BitArray, B::BitArray)
         r = Array{Int}(undef, promote_shape(size(A), size(B)))
-        ai = start(A)
-        bi = start(B)
+        ay, by = iterate(A), iterate(B)
         ri = 1
-        while !done(A, ai)
-            a, ai = next(A, ai)
-            b, bi = next(B, bi)
-            @inbounds r[ri] = ($f)(a, b)
+        # promote_shape guarantees that A and B have the
+        # same iteration space
+        while ay !== nothing
+            @inbounds r[ri] = ($f)(ay[1], by[1])
             ri += 1
+            ay, by = iterate(A, ay[2]), iterate(B, by[2])
         end
         return r
     end
@@ -1161,33 +1102,6 @@ for f in (:/, :\)
 end
 (/)(B::BitArray, x::Number) = (/)(Array(B), x)
 (/)(x::Number, B::BitArray) = (/)(x, Array(B))
-
-# broadcast specializations for &, |, and xor/⊻
-broadcast(::typeof(&), B::BitArray, x::Bool) = x ? copy(B) : falses(size(B))
-broadcast(::typeof(&), x::Bool, B::BitArray) = broadcast(&, B, x)
-broadcast(::typeof(|), B::BitArray, x::Bool) = x ? trues(size(B)) : copy(B)
-broadcast(::typeof(|), x::Bool, B::BitArray) = broadcast(|, B, x)
-broadcast(::typeof(xor), B::BitArray, x::Bool) = x ? .~B : copy(B)
-broadcast(::typeof(xor), x::Bool, B::BitArray) = broadcast(xor, B, x)
-for f in (:&, :|, :xor)
-    @eval begin
-        function broadcast(::typeof($f), A::BitArray, B::BitArray)
-            F = BitArray(undef, promote_shape(size(A),size(B))...)
-            Fc = F.chunks
-            Ac = A.chunks
-            Bc = B.chunks
-            (isempty(Ac) || isempty(Bc)) && return F
-            for i = 1:length(Fc)
-                Fc[i] = ($f)(Ac[i], Bc[i])
-            end
-            Fc[end] &= _msk_end(F)
-            return F
-        end
-        broadcast(::typeof($f), A::DenseArray{Bool}, B::BitArray) = broadcast($f, BitArray(A), B)
-        broadcast(::typeof($f), B::BitArray, A::DenseArray{Bool}) = broadcast($f, B, BitArray(A))
-    end
-end
-
 
 ## promotion to complex ##
 
@@ -1346,27 +1260,27 @@ values. If `n < 0`, elements are shifted backwards. Equivalent to
 ```jldoctest
 julia> B = BitVector([true, false, true, false, false])
 5-element BitArray{1}:
-  true
- false
-  true
- false
- false
+ 1
+ 0
+ 1
+ 0
+ 0
 
 julia> B >> 1
 5-element BitArray{1}:
- false
-  true
- false
-  true
- false
+ 0
+ 1
+ 0
+ 1
+ 0
 
 julia> B >> -1
 5-element BitArray{1}:
- false
-  true
- false
- false
- false
+ 0
+ 1
+ 0
+ 0
+ 0
 ```
 """
 (>>)(B::BitVector, i::Union{Int, UInt}) = B >>> i
@@ -1384,27 +1298,27 @@ values. If `n < 0`, elements are shifted forwards. Equivalent to
 ```jldoctest
 julia> B = BitVector([true, false, true, false, false])
 5-element BitArray{1}:
-  true
- false
-  true
- false
- false
+ 1
+ 0
+ 1
+ 0
+ 0
 
 julia> B << 1
 5-element BitArray{1}:
- false
-  true
- false
- false
- false
+ 0
+ 1
+ 0
+ 0
+ 0
 
 julia> B << -1
 5-element BitArray{1}:
- false
-  true
- false
-  true
- false
+ 0
+ 1
+ 0
+ 1
+ 0
 ```
 """
 (<<)(B::BitVector, i::Int) = (i >=0 ? B << unsigned(i) : B >> unsigned(-i))
@@ -1509,7 +1423,8 @@ end
 findfirstnot(B::BitArray) = findnextnot(B,1)
 
 # returns the index of the first matching element
-function findnext(pred::EqualTo, B::BitArray, start::Integer)
+function findnext(pred::Fix2{<:Union{typeof(isequal),typeof(==)},Bool},
+                  B::BitArray, start::Integer)
     v = pred.x
     v == false && return findnextnot(B, start)
     v == true && return findnext(B, start)
@@ -1581,7 +1496,8 @@ end
 findlastnot(B::BitArray) = findprevnot(B, length(B))
 
 # returns the index of the previous matching element
-function findprev(pred::EqualTo, B::BitArray, start::Integer)
+function findprev(pred::Fix2{<:Union{typeof(isequal),typeof(==)},Bool},
+                  B::BitArray, start::Integer)
     v = pred.x
     v == false && return findprevnot(B, start)
     v == true && return findprev(B, start)
@@ -1603,37 +1519,100 @@ function findprev(testf::Function, B::BitArray, start::Integer)
 end
 #findlast(testf::Function, B::BitArray) = findprev(testf, B, 1)  ## defined in array.jl
 
-function findall(B::BitArray)
-    l = length(B)
-    nnzB = count(B)
+function findmax(a::BitArray)
+    isempty(a) && throw(ArgumentError("BitArray must be non-empty"))
+    m, mi = false, 1
+    ti = 1
+    ac = a.chunks
+    for i = 1:length(ac)
+        @inbounds k = trailing_zeros(ac[i])
+        ti += k
+        k == 64 || return (true, @inbounds keys(a)[ti])
+    end
+    return m, @inbounds keys(a)[mi]
+end
+
+function findmin(a::BitArray)
+    isempty(a) && throw(ArgumentError("BitArray must be non-empty"))
+    m, mi = true, 1
+    ti = 1
+    ac = a.chunks
+    for i = 1:length(ac)-1
+        @inbounds k = trailing_ones(ac[i])
+        ti += k
+        k == 64 || return (false, @inbounds keys(a)[ti])
+    end
+    l = Base._mod64(length(a)-1) + 1
+    @inbounds k = trailing_ones(ac[end] & Base._msk_end(l))
+    ti += k
+    k == l || return (false, @inbounds keys(a)[ti])
+    return (m, @inbounds keys(a)[mi])
+end
+
+# findall helper functions
+# Generic case (>2 dimensions)
+function allindices!(I, B::BitArray)
     ind = first(keys(B))
-    I = Vector{typeof(ind)}(undef, nnzB)
-    nnzB == 0 && return I
-    Bc = B.chunks
-    Icount = 1
-    for i = 1:length(Bc)-1
-        u = UInt64(1)
-        c = Bc[i]
-        for j = 1:64
-            if c & u != 0
-                I[Icount] = ind
-                Icount += 1
-            end
-            ind = nextind(B, ind)
-            u <<= 1
-        end
-    end
-    u = UInt64(1)
-    c = Bc[end]
-    for j = 0:_mod64(l-1)
-        if c & u != 0
-            I[Icount] = ind
-            Icount += 1
-        end
+    for k = 1:length(B)
+        I[k] = ind
         ind = nextind(B, ind)
-        u <<= 1
     end
-    return I
+end
+
+# Optimized case for vector
+function allindices!(I, B::BitVector)
+    I[:] .= 1:length(B)
+end
+
+# Optimized case for matrix
+function allindices!(I, B::BitMatrix)
+    k = 1
+    for c = 1:size(B,2), r = 1:size(B,1)
+        I[k] = CartesianIndex(r, c)
+        k += 1
+    end
+end
+
+@inline _overflowind(i1, irest::Tuple{}, size) = (i1, irest)
+@inline function _overflowind(i1, irest, size)
+    i2 = irest[1]
+    while i1 > size[1]
+        i1 -= size[1]
+        i2 += 1
+    end
+    i2, irest = _overflowind(i2, tail(irest), tail(size))
+    return (i1, (i2, irest...))
+end
+
+@inline _toind(i1, irest::Tuple{}) = i1
+@inline _toind(i1, irest) = CartesianIndex(i1, irest...)
+
+function findall(B::BitArray)
+    nnzB = count(B)
+    I = Vector{eltype(keys(B))}(undef, nnzB)
+    nnzB == 0 && return I
+    nnzB == length(B) && (allindices!(I, B); return I)
+    Bc = B.chunks
+    Bs = size(B)
+    Bi = i1 = i = 1
+    irest = ntuple(one, ndims(B) - 1)
+    c = Bc[1]
+    @inbounds while true
+        while c == 0
+            Bi == length(Bc) && return I
+            i1 += 64
+            Bi += 1
+            c = Bc[Bi]
+        end
+
+        tz = trailing_zeros(c)
+        c = _blsr(c)
+
+        i1, irest = _overflowind(i1 + tz, irest, Bs)
+        I[i] = _toind(i1, irest)
+        i += 1
+        i1 -= tz
+    end
 end
 
 # For performance
@@ -1810,11 +1789,11 @@ function vcat(A::BitMatrix...)
 end
 
 # general case, specialized for BitArrays and Integers
-function cat(dims::Integer, X::Union{BitArray, Bool}...)
+function _cat(dims::Integer, X::Union{BitArray, Bool}...)
     catdims = dims2cat(dims)
     shape = cat_shape(catdims, (), map(cat_size, X)...)
     A = falses(shape)
-    return _cat(A, shape, catdims, X...)
+    return __cat(A, shape, catdims, X...)
 end
 
 # hvcat -> use fallbacks in abstractarray.jl

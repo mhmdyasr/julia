@@ -5,7 +5,7 @@ DocTestSetup = :(using LinearAlgebra)
 ```
 
 In addition to (and as part of) its support for multi-dimensional arrays, Julia provides native implementations
-of many common and useful linear algebra operations. Basic operations, such as [`tr`](@ref), [`det`](@ref),
+of many common and useful linear algebra operations which can be loaded with `using LinearAlgebra`. Basic operations, such as [`tr`](@ref), [`det`](@ref),
 and [`inv`](@ref) are all supported:
 
 ```jldoctest
@@ -38,13 +38,13 @@ julia> A = [-4. -17.; 2. 2.]
 
 julia> eigvals(A)
 2-element Array{Complex{Float64},1}:
- -1.0 + 5.0im
  -1.0 - 5.0im
+ -1.0 + 5.0im
 
 julia> eigvecs(A)
 2×2 Array{Complex{Float64},2}:
-  0.945905+0.0im        0.945905-0.0im
- -0.166924-0.278207im  -0.166924+0.278207im
+  0.945905-0.0im        0.945905+0.0im
+ -0.166924+0.278207im  -0.166924-0.278207im
 ```
 
 In addition, Julia provides many [factorizations](@ref man-linalg-factorizations) which can be used to
@@ -162,31 +162,35 @@ specialized routines that are specially developed for particular matrix types.
 The following tables summarize the types of special matrices that have been implemented in Julia,
 as well as whether hooks to various optimized methods for them in LAPACK are available.
 
-| Type                      | Description                                                                      |
-|:------------------------- |:-------------------------------------------------------------------------------- |
-| [`Symmetric`](@ref)       | [Symmetric matrix](https://en.wikipedia.org/wiki/Symmetric_matrix)               |
-| [`Hermitian`](@ref)       | [Hermitian matrix](https://en.wikipedia.org/wiki/Hermitian_matrix)               |
-| [`UpperTriangular`](@ref) | Upper [triangular matrix](https://en.wikipedia.org/wiki/Triangular_matrix)       |
-| [`LowerTriangular`](@ref) | Lower [triangular matrix](https://en.wikipedia.org/wiki/Triangular_matrix)       |
-| [`Tridiagonal`](@ref)     | [Tridiagonal matrix](https://en.wikipedia.org/wiki/Tridiagonal_matrix)           |
-| [`SymTridiagonal`](@ref)  | Symmetric tridiagonal matrix                                                     |
-| [`Bidiagonal`](@ref)      | Upper/lower [bidiagonal matrix](https://en.wikipedia.org/wiki/Bidiagonal_matrix) |
-| [`Diagonal`](@ref)        | [Diagonal matrix](https://en.wikipedia.org/wiki/Diagonal_matrix)                 |
-| [`UniformScaling`](@ref)  | [Uniform scaling operator](https://en.wikipedia.org/wiki/Uniform_scaling)        |
+| Type                          | Description                                                                                   |
+|:----------------------------- |:--------------------------------------------------------------------------------------------- |
+| [`Symmetric`](@ref)           | [Symmetric matrix](https://en.wikipedia.org/wiki/Symmetric_matrix)                            |
+| [`Hermitian`](@ref)           | [Hermitian matrix](https://en.wikipedia.org/wiki/Hermitian_matrix)                            |
+| [`UpperTriangular`](@ref)     | Upper [triangular matrix](https://en.wikipedia.org/wiki/Triangular_matrix)                    |
+| [`UnitUpperTriangular`](@ref) | Upper [triangular matrix](https://en.wikipedia.org/wiki/Triangular_matrix) with unit diagonal |
+| [`LowerTriangular`](@ref)     | Lower [triangular matrix](https://en.wikipedia.org/wiki/Triangular_matrix)                    |
+| [`UnitLowerTriangular`](@ref) | Lower [triangular matrix](https://en.wikipedia.org/wiki/Triangular_matrix) with unit diagonal |
+| [`Tridiagonal`](@ref)         | [Tridiagonal matrix](https://en.wikipedia.org/wiki/Tridiagonal_matrix)                        |
+| [`SymTridiagonal`](@ref)      | Symmetric tridiagonal matrix                                                                  |
+| [`Bidiagonal`](@ref)          | Upper/lower [bidiagonal matrix](https://en.wikipedia.org/wiki/Bidiagonal_matrix)              |
+| [`Diagonal`](@ref)            | [Diagonal matrix](https://en.wikipedia.org/wiki/Diagonal_matrix)                              |
+| [`UniformScaling`](@ref)      | [Uniform scaling operator](https://en.wikipedia.org/wiki/Uniform_scaling)                     |
 
 ### Elementary operations
 
-| Matrix type               | `+` | `-` | `*` | `\` | Other functions with optimized methods                      |
-|:------------------------- |:--- |:--- |:--- |:--- |:----------------------------------------------------------- |
-| [`Symmetric`](@ref)       |     |     |     | MV  | [`inv`](@ref), [`sqrt`](@ref), [`exp`](@ref)                |
-| [`Hermitian`](@ref)       |     |     |     | MV  | [`inv`](@ref), [`sqrt`](@ref), [`exp`](@ref)                |
-| [`UpperTriangular`](@ref) |     |     | MV  | MV  | [`inv`](@ref), [`det`](@ref)                                |
-| [`LowerTriangular`](@ref) |     |     | MV  | MV  | [`inv`](@ref), [`det`](@ref)                                |
-| [`SymTridiagonal`](@ref)  | M   | M   | MS  | MV  | [`eigmax`](@ref), [`eigmin`](@ref)                          |
-| [`Tridiagonal`](@ref)     | M   | M   | MS  | MV  |                                                             |
-| [`Bidiagonal`](@ref)      | M   | M   | MS  | MV  |                                                             |
-| [`Diagonal`](@ref)        | M   | M   | MV  | MV  | [`inv`](@ref), [`det`](@ref), [`logdet`](@ref), [`/`](@ref) |
-| [`UniformScaling`](@ref)  | M   | M   | MVS | MVS | [`/`](@ref)                                                 |
+| Matrix type                   | `+` | `-` | `*` | `\` | Other functions with optimized methods                      |
+|:----------------------------- |:--- |:--- |:--- |:--- |:----------------------------------------------------------- |
+| [`Symmetric`](@ref)           |     |     |     | MV  | [`inv`](@ref), [`sqrt`](@ref), [`exp`](@ref)                |
+| [`Hermitian`](@ref)           |     |     |     | MV  | [`inv`](@ref), [`sqrt`](@ref), [`exp`](@ref)                |
+| [`UpperTriangular`](@ref)     |     |     | MV  | MV  | [`inv`](@ref), [`det`](@ref)                                |
+| [`UnitUpperTriangular`](@ref) |     |     | MV  | MV  | [`inv`](@ref), [`det`](@ref)                                |
+| [`LowerTriangular`](@ref)     |     |     | MV  | MV  | [`inv`](@ref), [`det`](@ref)                                |
+| [`UnitLowerTriangular`](@ref) |     |     | MV  | MV  | [`inv`](@ref), [`det`](@ref)                                |
+| [`SymTridiagonal`](@ref)      | M   | M   | MS  | MV  | [`eigmax`](@ref), [`eigmin`](@ref)                          |
+| [`Tridiagonal`](@ref)         | M   | M   | MS  | MV  |                                                             |
+| [`Bidiagonal`](@ref)          | M   | M   | MS  | MV  |                                                             |
+| [`Diagonal`](@ref)            | M   | M   | MV  | MV  | [`inv`](@ref), [`det`](@ref), [`logdet`](@ref), [`/`](@ref) |
+| [`UniformScaling`](@ref)      | M   | M   | MVS | MVS | [`/`](@ref)                                                 |
 
 Legend:
 
@@ -198,16 +202,18 @@ Legend:
 
 ### Matrix factorizations
 
-| Matrix type               | LAPACK | [`eig`](@ref) | [`eigvals`](@ref) | [`eigvecs`](@ref) | [`svd`](@ref) | [`svdvals`](@ref) |
-|:------------------------- |:------ |:------------- |:----------------- |:----------------- |:------------- |:----------------- |
-| [`Symmetric`](@ref)       | SY     |               | ARI               |                   |               |                   |
-| [`Hermitian`](@ref)       | HE     |               | ARI               |                   |               |                   |
-| [`UpperTriangular`](@ref) | TR     | A             | A                 | A                 |               |                   |
-| [`LowerTriangular`](@ref) | TR     | A             | A                 | A                 |               |                   |
-| [`SymTridiagonal`](@ref)  | ST     | A             | ARI               | AV                |               |                   |
-| [`Tridiagonal`](@ref)     | GT     |               |                   |                   |               |                   |
-| [`Bidiagonal`](@ref)      | BD     |               |                   |                   | A             | A                 |
-| [`Diagonal`](@ref)        | DI     |               | A                 |                   |               |                   |
+| Matrix type                   | LAPACK | [`eigen`](@ref) | [`eigvals`](@ref) | [`eigvecs`](@ref) | [`svd`](@ref) | [`svdvals`](@ref) |
+|:----------------------------- |:------ |:------------- |:----------------- |:----------------- |:------------- |:----------------- |
+| [`Symmetric`](@ref)           | SY     |               | ARI               |                   |               |                   |
+| [`Hermitian`](@ref)           | HE     |               | ARI               |                   |               |                   |
+| [`UpperTriangular`](@ref)     | TR     | A             | A                 | A                 |               |                   |
+| [`UnitUpperTriangular`](@ref) | TR     | A             | A                 | A                 |               |                   |
+| [`LowerTriangular`](@ref)     | TR     | A             | A                 | A                 |               |                   |
+| [`UnitLowerTriangular`](@ref) | TR     | A             | A                 | A                 |               |                   |
+| [`SymTridiagonal`](@ref)      | ST     | A             | ARI               | AV                |               |                   |
+| [`Tridiagonal`](@ref)         | GT     |               |                   |                   |               |                   |
+| [`Bidiagonal`](@ref)          | BD     |               |                   |                   | A             | A                 |
+| [`Diagonal`](@ref)            | DI     |               | A                 |                   |               |                   |
 
 Legend:
 
@@ -298,8 +304,9 @@ Linear algebra functions in Julia are largely implemented by calling functions f
 ```@docs
 Base.:*(::AbstractMatrix, ::AbstractMatrix)
 Base.:\(::AbstractMatrix, ::AbstractVecOrMat)
+LinearAlgebra.SingularException
+LinearAlgebra.PosDefException
 LinearAlgebra.dot
-LinearAlgebra.vecdot
 LinearAlgebra.cross
 LinearAlgebra.factorize
 LinearAlgebra.Diagonal
@@ -310,49 +317,43 @@ LinearAlgebra.Symmetric
 LinearAlgebra.Hermitian
 LinearAlgebra.LowerTriangular
 LinearAlgebra.UpperTriangular
+LinearAlgebra.UnitLowerTriangular
+LinearAlgebra.UnitUpperTriangular
 LinearAlgebra.UniformScaling
 LinearAlgebra.lu
-LinearAlgebra.lufact
-LinearAlgebra.lufact!
-LinearAlgebra.chol
-LinearAlgebra.cholfact
-LinearAlgebra.cholfact!
+LinearAlgebra.lu!
+LinearAlgebra.cholesky
+LinearAlgebra.cholesky!
 LinearAlgebra.lowrankupdate
 LinearAlgebra.lowrankdowndate
 LinearAlgebra.lowrankupdate!
 LinearAlgebra.lowrankdowndate!
-LinearAlgebra.ldltfact
-LinearAlgebra.ldltfact!
+LinearAlgebra.ldlt
+LinearAlgebra.ldlt!
 LinearAlgebra.qr
 LinearAlgebra.qr!
-LinearAlgebra.qrfact
-LinearAlgebra.qrfact!
 LinearAlgebra.QR
 LinearAlgebra.QRCompactWY
 LinearAlgebra.QRPivoted
-LinearAlgebra.lqfact!
-LinearAlgebra.lqfact
+LinearAlgebra.lq!
 LinearAlgebra.lq
-LinearAlgebra.bkfact
-LinearAlgebra.bkfact!
-LinearAlgebra.eig
+LinearAlgebra.bunchkaufman
+LinearAlgebra.bunchkaufman!
 LinearAlgebra.eigvals
 LinearAlgebra.eigvals!
 LinearAlgebra.eigmax
 LinearAlgebra.eigmin
 LinearAlgebra.eigvecs
-LinearAlgebra.eigfact
-LinearAlgebra.eigfact!
-LinearAlgebra.hessfact
-LinearAlgebra.hessfact!
-LinearAlgebra.schurfact
-LinearAlgebra.schurfact!
+LinearAlgebra.eigen
+LinearAlgebra.eigen!
+LinearAlgebra.hessenberg
+LinearAlgebra.hessenberg!
+LinearAlgebra.schur!
 LinearAlgebra.schur
 LinearAlgebra.ordschur
 LinearAlgebra.ordschur!
-LinearAlgebra.svdfact
-LinearAlgebra.svdfact!
 LinearAlgebra.svd
+LinearAlgebra.svd!
 LinearAlgebra.svdvals
 LinearAlgebra.svdvals!
 LinearAlgebra.Givens
@@ -366,7 +367,7 @@ LinearAlgebra.diag
 LinearAlgebra.diagm
 LinearAlgebra.rank
 LinearAlgebra.norm
-LinearAlgebra.vecnorm
+LinearAlgebra.opnorm
 LinearAlgebra.normalize!
 LinearAlgebra.normalize
 LinearAlgebra.cond
@@ -379,8 +380,9 @@ Base.inv(::AbstractMatrix)
 LinearAlgebra.pinv
 LinearAlgebra.nullspace
 Base.kron
-LinearAlgebra.linreg
 LinearAlgebra.exp(::StridedMatrix{<:LinearAlgebra.BlasFloat})
+Base.:^(::AbstractMatrix, ::Number)
+Base.:^(::Number, ::AbstractMatrix)
 LinearAlgebra.log(::StridedMatrix)
 LinearAlgebra.sqrt(::StridedMatrix{<:Real})
 LinearAlgebra.cos(::StridedMatrix{<:Real})
@@ -420,11 +422,14 @@ LinearAlgebra.isdiag
 LinearAlgebra.ishermitian
 Base.transpose
 LinearAlgebra.transpose!
+LinearAlgebra.Transpose
 Base.adjoint
 LinearAlgebra.adjoint!
+LinearAlgebra.Adjoint
 Base.copy(::Union{Transpose,Adjoint})
 LinearAlgebra.stride1
 LinearAlgebra.checksquare
+LinearAlgebra.peakflops
 ```
 
 ## Low-level matrix operations
@@ -459,7 +464,7 @@ Many BLAS functions accept arguments that determine whether to transpose an argu
 which triangle of a matrix to reference (`uplo` or `ul`),
 whether the diagonal of a triangular matrix can be assumed to
 be all ones (`dA`) or which side of a matrix multiplication
-the input argument belongs on (`side`). The possiblities are:
+the input argument belongs on (`side`). The possibilities are:
 
 #### [Multplication Order](@id stdlib-blas-side)
 | `side` | Meaning                                                             |
@@ -496,6 +501,7 @@ LinearAlgebra.BLAS.asum
 LinearAlgebra.axpy!
 LinearAlgebra.BLAS.scal!
 LinearAlgebra.BLAS.scal
+LinearAlgebra.BLAS.iamax
 LinearAlgebra.BLAS.ger!
 LinearAlgebra.BLAS.syr!
 LinearAlgebra.BLAS.syrk!

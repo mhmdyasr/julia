@@ -3,8 +3,8 @@
 # Various Unicode functionality from the utf8proc library
 module Unicode
 
-import Base: show, ==, hash, string, Symbol, isless, length, eltype, start,
-             next, done, convert, isvalid, ismalformed, isoverlong
+import Base: show, ==, hash, string, Symbol, isless, length, eltype,
+             convert, isvalid, ismalformed, isoverlong, iterate
 
 # whether codepoints are valid Unicode scalar values, i.e. 0-0xd7ff, 0xe000-0x10ffff
 
@@ -12,11 +12,14 @@ import Base: show, ==, hash, string, Symbol, isless, length, eltype, start,
     isvalid(value) -> Bool
 
 Returns `true` if the given value is valid for its type, which currently can be either
-`AbstractChar` or `String`.
+`AbstractChar` or `String` or `SubString{String}`.
 
 # Examples
 ```jldoctest
 julia> isvalid(Char(0xd800))
+false
+
+julia> isvalid(SubString(String(UInt8[0xfe,0x80,0x80,0x80,0x80,0x80]),1,2))
 false
 
 julia> isvalid(Char(0xd799))
@@ -30,12 +33,15 @@ isvalid(value)
 
 Returns `true` if the given value is valid for that type. Types currently can
 be either `AbstractChar` or `String`. Values for `AbstractChar` can be of type `AbstractChar` or [`UInt32`](@ref).
-Values for `String` can be of that type, or `Vector{UInt8}`.
+Values for `String` can be of that type, or `Vector{UInt8}` or `SubString{String}`.
 
 # Examples
 ```jldoctest
 julia> isvalid(Char, 0xd800)
 false
+
+julia> isvalid(String, SubString("thisisvalid",1,5))
+true
 
 julia> isvalid(Char, 0xd799)
 true
@@ -234,7 +240,7 @@ julia> textwidth("March")
 5
 ```
 """
-textwidth(s::AbstractString) = mapreduce(textwidth, +, 0, s)
+textwidth(s::AbstractString) = mapreduce(textwidth, +, s; init=0)
 
 lowercase(c::T) where {T<:AbstractChar} = isascii(c) ? ('A' <= c <= 'Z' ? c + 0x20 : c) :
     T(ccall(:utf8proc_tolower, UInt32, (UInt32,), c))
@@ -344,28 +350,28 @@ julia> isdigit('α')
 false
 ```
 """
-isdigit(c::AbstractChar) = '0' <= c <= '9'
+isdigit(c::AbstractChar) = (c >= '0') & (c <= '9')
 
 """
-    isalpha(c::AbstractChar) -> Bool
+    isletter(c::AbstractChar) -> Bool
 
-Tests whether a character is alphabetic.
-A character is classified as alphabetic if it belongs to the Unicode general
+Test whether a character is a letter.
+A character is classified as a letter if it belongs to the Unicode general
 category Letter, i.e. a character whose category code begins with 'L'.
 
 # Examples
 ```jldoctest
-julia> isalpha('❤')
+julia> isletter('❤')
 false
 
-julia> isalpha('α')
+julia> isletter('α')
 true
 
-julia> isalpha('9')
+julia> isletter('9')
 false
 ```
 """
-isalpha(c::AbstractChar) = UTF8PROC_CATEGORY_LU <= category_code(c) <= UTF8PROC_CATEGORY_LO
+isletter(c::AbstractChar) = UTF8PROC_CATEGORY_LU <= category_code(c) <= UTF8PROC_CATEGORY_LO
 
 """
     isnumeric(c::AbstractChar) -> Bool
@@ -649,22 +655,22 @@ function length(g::GraphemeIterator{S}) where {S}
     return n
 end
 
-start(g::GraphemeIterator) = (start(g.s), Ref{Int32}(0))
-done(g::GraphemeIterator, i) = done(g.s, i[1])
-
-function next(g::GraphemeIterator, i_)
+function iterate(g::GraphemeIterator, i_=(Int32(0),firstindex(g.s)))
     s = g.s
-    i, state = i_
+    statei, i = i_
+    state = Ref{Int32}(statei)
     j = i
-    c0, k = next(s, i)
-    while !done(s, k) # loop until next grapheme is s[i:j]
-        c, ℓ = next(s, k)
+    y = iterate(s, i)
+    y === nothing && return nothing
+    c0, k = y
+    while k <= ncodeunits(s) # loop until next grapheme is s[i:j]
+        c, ℓ = iterate(s, k)
         isgraphemebreak!(state, c0, c) && break
         j = k
         k = ℓ
         c0 = c
     end
-    return (SubString(s, i, j), (k, state))
+    return (SubString(s, i, j), (state[], k))
 end
 
 ==(g1::GraphemeIterator, g2::GraphemeIterator) = g1.s == g2.s

@@ -79,26 +79,118 @@ mktempdir() do dir
     end
 end
 
+## unit tests of project parsing ##
+
 import Base: SHA1, PkgId, load_path, identify_package, locate_package, version_slug, dummy_uuid
 import UUIDs: UUID, uuid4, uuid_version
 import Random: shuffle, randstring
 using Test
 
+let shastr = "ab"^20
+    hash = SHA1(shastr)
+    @test hash == eval(Meta.parse(repr(hash))) # check show method
+    @test string(hash) == shastr
+    @test "check $hash" == "check $shastr"
+end
+
+let shastr1 = "ab"^20, shastr2 = "ac"^20
+    hash1 = SHA1(shastr1)
+    hash2 = SHA1(shastr2)
+    @test isless(hash1, hash2)
+    @test !isless(hash2, hash1)
+    @test !isless(hash1, hash1)
+end
+
+let uuidstr = "ab"^4 * "-" * "ab"^2 * "-" * "ab"^2 * "-" * "ab"^2 * "-" * "ab"^6
+    uuid = UUID(uuidstr)
+    @test uuid == eval(Meta.parse(repr(uuid))) # check show method
+    @test string(uuid) == uuidstr == sprint(print, uuid)
+    @test "check $uuid" == "check $uuidstr"
+    @test UUID(UInt128(uuid)) == uuid
+    @test UUID(convert(NTuple{2, UInt64}, uuid)) == uuid
+    @test UUID(convert(NTuple{4, UInt32}, uuid)) == uuid
+end
+@test_throws ArgumentError UUID("@"^4 * "-" * "@"^2 * "-" * "@"^2 * "-" * "@"^2 * "-" * "@"^6)
+
+function subset(v::Vector{T}, m::Int) where T
+    T[v[j] for j = 1:length(v) if ((m >>> (j - 1)) & 1) == 1]
+end
+
+function perm(p::Vector, i::Int)
+    for j = length(p):-1:1
+        i, k = divrem(i, j)
+        p[j], p[k+1] = p[k+1], p[j]
+    end
+    return p
+end
+
+@testset "explicit_project_deps_get" begin
+    mktempdir() do dir
+        project_file = joinpath(dir, "Project.toml")
+        touch(project_file) # dummy_uuid calls realpath
+        # various UUIDs to work with
+        proj_uuid = dummy_uuid(project_file)
+        root_uuid = uuid4()
+        this_uuid = uuid4()
+        # project file to subset/permute
+        lines = split("""
+        name = "Root"
+        uuid = "$root_uuid"
+        [deps]
+        This = "$this_uuid"
+        """, '\n')
+        N = length(lines)
+        # test every permutation of every subset of lines
+        for m = 0:2^N-1
+            s = subset(lines, m) # each subset of lines
+            for i = 1:factorial(count_ones(m))
+                p = perm(s, i) # each permutation of the subset
+                open(project_file, write=true) do io
+                    for line in p
+                        println(io, line)
+                    end
+                end
+                # look at lines and their order
+                n = findfirst(line -> startswith(line, "name"), p)
+                u = findfirst(line -> startswith(line, "uuid"), p)
+                d = findfirst(line -> line == "[deps]", p)
+                t = findfirst(line -> startswith(line, "This"), p)
+                # look up various packages by name
+                root = Base.explicit_project_deps_get(project_file, "Root")
+                this = Base.explicit_project_deps_get(project_file, "This")
+                that = Base.explicit_project_deps_get(project_file, "That")
+                # test that the correct answers are given
+                @test root == (something(n, N+1) ≥ something(d, N+1) ? false :
+                               something(u, N+1) < something(d, N+1) ? root_uuid : proj_uuid)
+                @test this == (something(d, N+1) < something(t, N+1) ≤ N ? this_uuid : false)
+                @test that == false
+            end
+        end
+    end
+end
+
+## functional testing of package identification, location & loading ##
+
 saved_load_path = copy(LOAD_PATH)
 saved_depot_path = copy(DEPOT_PATH)
+saved_home_project = Base.HOME_PROJECT[]
+saved_active_project = Base.ACTIVE_PROJECT[]
+
 push!(empty!(LOAD_PATH), "project")
 push!(empty!(DEPOT_PATH), "depot")
+Base.HOME_PROJECT[] = nothing
+Base.ACTIVE_PROJECT[] = nothing
 
 @test load_path() == [abspath("project","Project.toml")]
 
 @testset "project & manifest identify_package & locate_package" begin
     local path
     for (names, uuid, path) in [
-        ("Foo",     "767738be-2f1f-45a9-b806-0234f3164144", "project/deps/Foo1/src/Foo.jl"      ),
-        ("Bar.Foo", "6f418443-bd2e-4783-b551-cdbac608adf2", "project/deps/Foo2.jl/src/Foo.jl"   ),
-        ("Bar",     "2a550a13-6bab-4a91-a4ee-dff34d6b99d0", "project/deps/Bar/src/Bar.jl"       ),
-        ("Foo.Baz", "6801f525-dc68-44e8-a4e8-cabd286279e7", "depot/packages/Baz/81oL/src/Baz.jl"),
-        ("Foo.Qux", "b5ec9b9c-e354-47fd-b367-a348bdc8f909", "project/deps/Qux.jl"               ),
+        ("Foo",     "767738be-2f1f-45a9-b806-0234f3164144", "project/deps/Foo1/src/Foo.jl"       ),
+        ("Bar.Foo", "6f418443-bd2e-4783-b551-cdbac608adf2", "project/deps/Foo2.jl/src/Foo.jl"    ),
+        ("Bar",     "2a550a13-6bab-4a91-a4ee-dff34d6b99d0", "project/deps/Bar/src/Bar.jl"        ),
+        ("Foo.Baz", "6801f525-dc68-44e8-a4e8-cabd286279e7", "depot/packages/Baz/81oLe/src/Baz.jl"),
+        ("Foo.Qux", "b5ec9b9c-e354-47fd-b367-a348bdc8f909", "project/deps/Qux.jl"                ),
     ]
         n = map(String, split(names, '.'))
         pkg = identify_package(n...)
@@ -138,6 +230,8 @@ push!(empty!(DEPOT_PATH), "depot")
     end
 end
 
+module NotPkgModule; end
+
 @testset "project & manifest import" begin
     @test !@isdefined Foo
     @test !@isdefined Bar
@@ -174,6 +268,12 @@ end
         end
     end
     @test Foo.which == "path"
+
+    @testset "pathof" begin
+        @test pathof(Foo) == normpath(abspath(@__DIR__, "project/deps/Foo1/src/Foo.jl"))
+        @test pathof(NotPkgModule) === nothing
+    end
+
 end
 
 ## systematic generation of test environments ##
@@ -415,14 +515,14 @@ function test_find(
     end
 end
 
-@testset "identify_package with one env in load path" begin
+@testset "find_package with one env in load path" begin
     for (env, (_, _, roots, graph, paths)) in envs
         push!(empty!(LOAD_PATH), env)
         test_find(roots, graph, paths)
     end
 end
 
-@testset "identify_package with two envs in load path" begin
+@testset "find_package with two envs in load path" begin
     for x = false:true,
         (env1, (_, _, roots1, graph1, paths1)) in (x ? envs : rand(envs, 10)),
         (env2, (_, _, roots2, graph2, paths2)) in (x ? rand(envs, 10) : envs)
@@ -434,7 +534,7 @@ end
     end
 end
 
-@testset "identify_package with three envs in load path" begin
+@testset "find_package with three envs in load path" begin
     for (env1, (_, _, roots1, graph1, paths1)) in rand(envs, 10),
         (env2, (_, _, roots2, graph2, paths2)) in rand(envs, 10),
         (env3, (_, _, roots3, graph3, paths3)) in rand(envs, 10)
@@ -443,6 +543,87 @@ end
         graph = merge(graph3, graph2, graph1)
         paths = merge(paths3, paths2, paths1)
         test_find(roots, graph, paths)
+    end
+end
+
+# normalization of paths by include (#26424)
+@test_throws ErrorException("could not open file $(joinpath(@__DIR__, "notarealfile.jl"))") include("./notarealfile.jl")
+
+old_act_proj = Base.ACTIVE_PROJECT[]
+pushfirst!(LOAD_PATH, "@")
+try
+    Base.ACTIVE_PROJECT[] = joinpath(@__DIR__, "TestPkg")
+    @eval using TestPkg
+finally
+    Base.ACTIVE_PROJECT[] = old_act_proj
+    popfirst!(LOAD_PATH)
+end
+
+@testset "--project and JULIA_PROJECT paths should be absolutified" begin
+    mktempdir() do dir; cd(dir) do
+        mkdir("foo")
+        script = """
+        using Test
+        old = Base.active_project()
+        cd("foo")
+        @test Base.active_project() == old
+        """
+        @test success(`$(Base.julia_cmd()) --project=foo -e $(script)`)
+        withenv("JULIA_PROJECT" => "foo") do
+            @test success(`$(Base.julia_cmd()) -e $(script)`)
+        end
+    end; end
+end
+
+# Base.active_project when version directory exist in depot, but contains no project file
+mktempdir() do dir
+    vdir = Base.DEFAULT_LOAD_PATH[2]
+    vdir = replace(vdir, "#" => VERSION.major, count = 1)
+    vdir = replace(vdir, "#" => VERSION.minor, count = 1)
+    vdir = replace(vdir, "#" => VERSION.patch, count = 1)
+    vdir = vdir[2:end] # remove @
+    vpath = joinpath(dir, "environments", vdir)
+    mkpath(vpath)
+    withenv("JULIA_DEPOT_PATH" => dir) do
+        script = "@assert startswith(Base.active_project(), $(repr(vpath)))"
+        @test success(`$(Base.julia_cmd()) -e $(script)`)
+    end
+end
+
+@testset "expansion of JULIA_LOAD_PATH" begin
+    s = Sys.iswindows() ? ';' : ':'
+    tmp = "/foo/bar"
+    cases = Dict{Any,Vector{String}}(
+        nothing => Base.DEFAULT_LOAD_PATH,
+        "" => [],
+        "$s" => Base.DEFAULT_LOAD_PATH,
+        "$tmp$s" => [tmp; Base.DEFAULT_LOAD_PATH],
+        "$s$tmp" => [Base.DEFAULT_LOAD_PATH; tmp],
+        )
+    for (env, result) in pairs(cases)
+        withenv("JULIA_LOAD_PATH" => env) do
+            script = "LOAD_PATH == $(repr(result)) || error()"
+            @test success(`$(Base.julia_cmd()) -e $script`)
+        end
+    end
+end
+
+@testset "expansion of JULIA_DEPOT_PATH" begin
+    s = Sys.iswindows() ? ';' : ':'
+    tmp = "/foo/bar"
+    DEFAULT = Base.append_default_depot_path!(String[])
+    cases = Dict{Any,Vector{String}}(
+        nothing => DEFAULT,
+        "" => [],
+        "$s" => DEFAULT,
+        "$tmp$s" => [tmp; DEFAULT],
+        "$s$tmp" => [DEFAULT; tmp],
+        )
+    for (env, result) in pairs(cases)
+        withenv("JULIA_DEPOT_PATH" => env) do
+            script = "DEPOT_PATH == $(repr(result)) || error()"
+            @test success(`$(Base.julia_cmd()) -e $script`)
+        end
     end
 end
 
@@ -455,5 +636,12 @@ for depot in depots
     rm(depot, force=true, recursive=true)
 end
 
-append!(empty!(DEPOT_PATH), saved_depot_path)
 append!(empty!(LOAD_PATH), saved_load_path)
+append!(empty!(DEPOT_PATH), saved_depot_path)
+Base.HOME_PROJECT[] = saved_home_project
+Base.ACTIVE_PROJECT[] = saved_active_project
+
+# issue #28190
+module Foo; import Libdl; end
+import .Foo.Libdl; import Libdl
+@test Foo.Libdl === Libdl

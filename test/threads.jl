@@ -2,8 +2,27 @@
 
 using Test
 using Base.Threads
+using Base.Threads: SpinLock, Mutex
 
 # threading constructs
+
+let a = zeros(Int, 2 * nthreads())
+    @threads for i = 1:length(a)
+        @sync begin
+            @async begin
+                @async (Libc.systemsleep(1); a[i] += 1)
+                yield()
+                a[i] += 1
+            end
+            @async begin
+                yield()
+                @async (Libc.systemsleep(1); a[i] += 1)
+                a[i] += 1
+            end
+        end
+    end
+    @test all(isequal(4), a)
+end
 
 # parallel loop with parallel atomic addition
 function threaded_loop(a, r, x)
@@ -90,13 +109,13 @@ function threaded_add_locked(::Type{LockT}, x, n) where LockT
 end
 
 @test threaded_add_locked(SpinLock, 0, 10000) == 10000
-@test threaded_add_locked(RecursiveSpinLock, 0, 10000) == 10000
+@test threaded_add_locked(ReentrantLock, 0, 10000) == 10000
 @test threaded_add_locked(Mutex, 0, 10000) == 10000
 
 # Check if the recursive lock can be locked and unlocked correctly.
-let critical = RecursiveSpinLock()
+let critical = ReentrantLock()
     @test !islocked(critical)
-    @test_throws AssertionError unlock(critical)
+    @test_throws ErrorException("unlock count must match lock count") unlock(critical)
     @test lock(critical) === nothing
     @test islocked(critical)
     @test lock(critical) === nothing
@@ -108,12 +127,12 @@ let critical = RecursiveSpinLock()
     @test islocked(critical)
     @test unlock(critical) === nothing
     @test !islocked(critical)
-    @test_throws AssertionError unlock(critical)
+    @test_throws ErrorException("unlock count must match lock count") unlock(critical)
     @test trylock(critical) == true
     @test islocked(critical)
     @test unlock(critical) === nothing
     @test !islocked(critical)
-    @test_throws AssertionError unlock(critical)
+    @test_throws ErrorException("unlock count must match lock count") unlock(critical)
     @test !islocked(critical)
 end
 
@@ -131,7 +150,7 @@ function threaded_gc_locked(::Type{LockT}) where LockT
 end
 
 threaded_gc_locked(SpinLock)
-threaded_gc_locked(Threads.RecursiveSpinLock)
+threaded_gc_locked(Threads.ReentrantLock)
 threaded_gc_locked(Mutex)
 
 # Issue 14726
@@ -171,9 +190,26 @@ end
 end
 
 # Ensure only LLVM-supported types can be atomic
-@test_throws TypeError Atomic{Bool}
 @test_throws TypeError Atomic{BigInt}
 @test_throws TypeError Atomic{ComplexF64}
+
+function test_atomic_bools()
+    x = Atomic{Bool}(false)
+    # Arithmetic functions are not defined.
+    @test_throws MethodError atomic_add!(x, true)
+    @test_throws MethodError atomic_sub!(x, true)
+    # All the rest are:
+    for v in [true, false]
+        @test x[] == atomic_xchg!(x, v)
+        @test v == atomic_cas!(x, v, !v)
+    end
+    x = Atomic{Bool}(false)
+    @test false == atomic_max!(x, true); @test x[] == true
+    x = Atomic{Bool}(true)
+    @test true == atomic_and!(x, false); @test x[] == false
+end
+
+test_atomic_bools()
 
 # Test atomic memory ordering with load/store
 mutable struct CommBuf
@@ -383,22 +419,44 @@ for period in (0.06, Dates.Millisecond(60))
     end
 end
 
-complex_cfunction = function(a)
-    s = zero(eltype(a))
-    @inbounds @simd for i in a
-        s += muladd(a[i], a[i], -2)
-    end
-    return s
-end
 function test_thread_cfunction()
-    @threads for i in 1:1000
-        # Make sure this is not inferrable
-        # and a runtime call to `jl_function_ptr` will be created
-        ccall(:jl_function_ptr, Ptr{Cvoid}, (Any, Any, Any),
-              complex_cfunction, Float64, Tuple{Ref{Vector{Float64}}})
+    # ensure a runtime call to `get_trampoline` will be created
+    # TODO: get_trampoline is not thread-safe (as this test shows)
+    function complex_cfunction(a)
+        s = zero(eltype(a))
+        @inbounds @simd for i in a
+            s += muladd(a[i], a[i], -2)
+        end
+        return s
     end
+    fs = [ let a = zeros(10)
+            () -> complex_cfunction(a)
+        end for i in 1:1000 ]
+    @noinline cf(f) = @cfunction $f Float64 ()
+    cfs = Vector{Base.CFunction}(undef, length(fs))
+    cf1 = cf(fs[1])
+    @threads for i in 1:1000
+        cfs[i] = cf(fs[i])
+    end
+    @test cfs[1] == cf1
+    @test cfs[2] == cf(fs[2])
+    @test length(unique(cfs)) == 1000
+    ok = zeros(Int, nthreads())
+    @threads for i in 1:10000
+        i = mod1(i, 1000)
+        fi = fs[i]
+        cfi = cf(fi)
+        GC.@preserve cfi begin
+            ok[threadid()] += (cfi === cfs[i])
+        end
+    end
+    @test sum(ok) == 10000
 end
-test_thread_cfunction()
+if nthreads() == 1
+    test_thread_cfunction()
+else
+    @test_broken "cfunction trampoline code not thread-safe"
+end
 
 # Compare the two ways of checking if threading is enabled.
 # `jl_tls_states` should only be defined on non-threading build.
@@ -430,6 +488,7 @@ function test_load_and_lookup_18020(n)
             ccall(:jl_load_and_lookup,
                   Ptr{Cvoid}, (Cstring, Cstring, Ref{Ptr{Cvoid}}),
                   "$i", :f, C_NULL)
+        catch
         end
     end
 end
@@ -467,3 +526,99 @@ function test_thread_too_few_iters()
     @test !(true in found[nthreads():end])
 end
 test_thread_too_few_iters()
+
+let e = Event(), started = Event()
+    done = false
+    t = @async (notify(started); wait(e); done = true)
+    wait(started)
+    sleep(0.1)
+    @test done == false
+    notify(e)
+    wait(t)
+    @test done == true
+    blocked = true
+    wait(@async (wait(e); blocked = false))
+    @test !blocked
+end
+
+
+@testset "InvasiveLinkedList" begin
+    @test eltype(Base.InvasiveLinkedList{Integer}) == Integer
+    @test eltype(Base.LinkedList{Integer}) == Integer
+    @test eltype(Base.InvasiveLinkedList{<:Integer}) == Any
+    @test eltype(Base.LinkedList{<:Integer}) == Any
+    @test eltype(Base.InvasiveLinkedList{<:Base.LinkedListItem{Integer}}) == Any
+
+    t = Base.LinkedList{Integer}()
+    @test eltype(t) == Integer
+    @test isempty(t)
+    @test length(t) == 0
+    @test isempty(collect(t)::Vector{Integer})
+    @test pushfirst!(t, 2) === t
+    @test !isempty(t)
+    @test length(t) == 1
+    @test pushfirst!(t, 1) === t
+    @test !isempty(t)
+    @test length(t) == 2
+    @test collect(t) == [1, 2]
+    @test pop!(t) == 2
+    @test !isempty(t)
+    @test length(t) == 1
+    @test collect(t) == [1]
+    @test pop!(t) == 1
+    @test isempty(t)
+    @test length(t) == 0
+    @test collect(t) == []
+
+    @test push!(t, 1) === t
+    @test !isempty(t)
+    @test length(t) == 1
+    @test push!(t, 2) === t
+    @test !isempty(t)
+    @test length(t) == 2
+    @test collect(t) == [1, 2]
+    @test popfirst!(t) == 1
+    @test popfirst!(t) == 2
+    @test isempty(collect(t)::Vector{Integer})
+
+    @test push!(t, 5) === t
+    @test push!(t, 6) === t
+    @test push!(t, 7) === t
+    @test length(t) === 3
+    @test Base.list_deletefirst!(t, 1) === t
+    @test length(t) === 3
+    @test Base.list_deletefirst!(t, 6) === t
+    @test length(t) === 2
+    @test collect(t) == [5, 7]
+    @test Base.list_deletefirst!(t, 6) === t
+    @test length(t) === 2
+    @test Base.list_deletefirst!(t, 7) === t
+    @test length(t) === 1
+    @test collect(t) == [5]
+    @test Base.list_deletefirst!(t, 5) === t
+    @test length(t) === 0
+    @test collect(t) == []
+    @test isempty(t)
+
+    t2 = Base.LinkedList{Integer}()
+    @test push!(t, 5) === t
+    @test push!(t, 6) === t
+    @test push!(t, 7) === t
+    @test push!(t2, 2) === t2
+    @test push!(t2, 3) === t2
+    @test push!(t2, 4) === t2
+    @test Base.list_append!!(t, t2) === t
+    @test isempty(t2)
+    @test isempty(collect(t2)::Vector{Integer})
+    @test collect(t) == [5, 6, 7, 2, 3, 4]
+    @test Base.list_append!!(t, t2) === t
+    @test collect(t) == [5, 6, 7, 2, 3, 4]
+    @test Base.list_append!!(t2, t) === t2
+    @test isempty(t)
+    @test collect(t2) == [5, 6, 7, 2, 3, 4]
+    @test push!(t, 1) === t
+    @test collect(t) == [1]
+    @test Base.list_append!!(t2, t) === t2
+    @test isempty(t)
+    @test collect(t2) == [5, 6, 7, 2, 3, 4, 1]
+end

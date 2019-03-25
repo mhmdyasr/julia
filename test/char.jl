@@ -116,23 +116,10 @@ end
         @test eltype(x) == Char
     end
 
-    #start(c::Char) = false
+    #iterate(c::Char)
     for x in testarrays
-        @test start(x) == false
-    end
-
-    #next(c::Char, state) = (c, true)
-    for x in testarrays
-        for state in [true, false]
-            @test next(x, state) == (x, true)
-        end
-    end
-
-    #done(c::Char, state) = state
-    for x in testarrays
-        for state in [true, false]
-            @test done(x, state) == state
-        end
+        @test iterate(x)[1] == x
+        @test iterate(x, iterate(x)[2]) == nothing
     end
 
     #isless(x::Char, y::Integer) = isless(UInt32(x), y)
@@ -218,7 +205,7 @@ end
             @test eof(io)
             close(io)
         end
-   finally
+    finally
         rm(file, force=true)
     end
 end
@@ -232,7 +219,7 @@ end
         end
         @test sprint(show, c) == rep
         if Base.isoverlong(c)
-            @test contains(sprint(show, "text/plain", c), rep*": [overlong]")
+            @test occursin(rep*": [overlong]", sprint(show, "text/plain", c))
         end
     end
 
@@ -268,4 +255,38 @@ Base.codepoint(c::ASCIIChar) = reinterpret(UInt8, c)
     @test string(ASCIIChar('x')) == "x"
     @test_throws MethodError write(IOBuffer(), ASCIIChar('x'))
     @test_throws MethodError read(IOBuffer('x'), ASCIIChar)
+end
+
+@testset "ncodeunits(::Char)" begin
+    # valid encodings
+    @test ncodeunits('\0')       == 1
+    @test ncodeunits('\x1')      == 1
+    @test ncodeunits('\x7f')     == 1
+    @test ncodeunits('\u80')     == 2
+    @test ncodeunits('\uff')     == 2
+    @test ncodeunits('\u7ff')    == 2
+    @test ncodeunits('\u800')    == 3
+    @test ncodeunits('\uffff')   == 3
+    @test ncodeunits('\U10000')  == 4
+    @test ncodeunits('\U10ffff') == 4
+    # invalid encodings
+    @test ncodeunits(reinterpret(Char, 0x80_00_00_00)) == 1
+    @test ncodeunits(reinterpret(Char, 0x01_00_00_00)) == 1
+    @test ncodeunits(reinterpret(Char, 0x00_80_00_00)) == 2
+    @test ncodeunits(reinterpret(Char, 0x00_01_00_00)) == 2
+    @test ncodeunits(reinterpret(Char, 0x00_00_80_00)) == 3
+    @test ncodeunits(reinterpret(Char, 0x00_00_01_00)) == 3
+    @test ncodeunits(reinterpret(Char, 0x00_00_00_80)) == 4
+    @test ncodeunits(reinterpret(Char, 0x00_00_00_01)) == 4
+end
+
+@testset "reinterpret(Char, ::UInt32)" begin
+    for s = 0:31
+        u = one(UInt32) << s
+        @test reinterpret(UInt32, reinterpret(Char, u)) === u
+    end
+end
+
+@testset "broadcasting of Char" begin
+    @test identity.('a') == 'a'
 end

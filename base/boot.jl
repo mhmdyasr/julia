@@ -82,7 +82,6 @@
 #mutable struct Expr
 #    head::Symbol
 #    args::Array{Any,1}
-#    typ::Any
 #end
 
 #struct LineNumberNode
@@ -90,8 +89,11 @@
 #    file::Any # nominally Union{Symbol,Nothing}
 #end
 
-#struct LabelNode
-#    label::Int
+#struct LineInfoNode
+#    method::Any
+#    file::Symbol
+#    line::Int
+#    inlined_at::Int
 #end
 
 #struct GotoNode
@@ -106,6 +108,14 @@
 #struct PhiNode
 #    edges::Vector{Any}
 #    values::Vector{Any}
+#end
+
+#struct PhiCNode
+#    values::Vector{Any}
+#end
+
+#struct UpsilonNode
+#    val
 #end
 
 #struct QuoteNode
@@ -131,7 +141,7 @@
 
 export
     # key types
-    Any, DataType, Vararg, ANY, NTuple,
+    Any, DataType, Vararg, NTuple,
     Tuple, Type, UnionAll, TypeVar, Union, Nothing, Cvoid,
     AbstractArray, DenseArray, NamedTuple,
     # special objects
@@ -151,9 +161,9 @@ export
     TypeError, ArgumentError, MethodError, AssertionError, LoadError, InitError,
     UndefKeywordError,
     # AST representation
-    Expr, QuoteNode, LineNumberNode, GlobalRef, PiNode, PhiNode,
+    Expr, QuoteNode, LineNumberNode, GlobalRef,
     # object model functions
-    fieldtype, getfield, setfield!, nfields, throw, tuple, ===, isdefined, eval,
+    fieldtype, getfield, setfield!, nfields, throw, tuple, ===, isdefined, eval, ifelse,
     # sizeof    # not exported, to avoid conflicting with Base.sizeof
     # type reflection
     <:, typeof, isa, typeassert,
@@ -185,9 +195,9 @@ primitive type Int8    <: Signed   8 end
 primitive type Int16   <: Signed   16 end
 primitive type UInt16  <: Unsigned 16 end
 #primitive type Int32   <: Signed   32 end
-primitive type UInt32  <: Unsigned 32 end
+#primitive type UInt32  <: Unsigned 32 end
 #primitive type Int64   <: Signed   64 end
-primitive type UInt64  <: Unsigned 64 end
+#primitive type UInt64  <: Unsigned 64 end
 primitive type Int128  <: Signed   128 end
 primitive type UInt128 <: Unsigned 128 end
 
@@ -246,14 +256,23 @@ struct DomainError <: Exception
     DomainError(@nospecialize(val), @nospecialize(msg)) = (@_noinline_meta; new(val, msg))
 end
 struct TypeError <: Exception
+    # `func` is the name of the builtin function that encountered a type error,
+    # the name of the type that hit an error in its definition or application, or
+    # some other brief description of where the error happened.
+    # `context` optionally adds extra detail, e.g. the name of the type parameter
+    # that got a bad value.
     func::Symbol
-    context::AbstractString
+    context::Union{AbstractString,Symbol}
     expected::Type
     got
+    TypeError(func, context, @nospecialize(expected::Type), @nospecialize(got)) =
+        new(func, context, expected, got)
 end
+TypeError(where, @nospecialize(expected::Type), @nospecialize(got)) =
+    TypeError(Symbol(where), "", expected, got)
 struct InexactError <: Exception
     func::Symbol
-    T::Type
+    T  # Type
     val
     InexactError(f::Symbol, @nospecialize(T), @nospecialize(val)) = (@_noinline_meta; new(f, T, val))
 end
@@ -305,7 +324,6 @@ getptls() = ccall(:jl_get_ptls_states, Ptr{Cvoid}, ())
 
 include(m::Module, fname::String) = ccall(:jl_load_, Any, (Any, Any), m, fname)
 
-eval(@nospecialize(e)) = eval(Main, e)
 eval(m::Module, @nospecialize(e)) = ccall(:jl_toplevel_eval_in, Any, (Any, Any), m, e)
 
 kwfunc(@nospecialize(f)) = ccall(:jl_get_keyword_sorter, Any, (Any,), f)
@@ -327,12 +345,9 @@ mutable struct WeakRef
                                       (Ptr{Cvoid}, Any), getptls(), v)
 end
 
-TypeVar(n::Symbol) =
-    ccall(:jl_new_typevar, Ref{TypeVar}, (Any, Any, Any), n, Union{}, Any)
-TypeVar(n::Symbol, @nospecialize(ub)) =
-    ccall(:jl_new_typevar, Ref{TypeVar}, (Any, Any, Any), n, Union{}, ub)
-TypeVar(n::Symbol, @nospecialize(lb), @nospecialize(ub)) =
-    ccall(:jl_new_typevar, Ref{TypeVar}, (Any, Any, Any), n, lb, ub)
+TypeVar(n::Symbol) = _typevar(n, Union{}, Any)
+TypeVar(n::Symbol, @nospecialize(ub)) = _typevar(n, Union{}, ub)
+TypeVar(n::Symbol, @nospecialize(lb), @nospecialize(ub)) = _typevar(n, lb, ub)
 
 UnionAll(v::TypeVar, @nospecialize(t)) = ccall(:jl_type_unionall, Any, (Any, Any), v, t)
 
@@ -345,7 +360,6 @@ end
 VecElement(arg::T) where {T} = VecElement{T}(arg)
 
 _new(typ::Symbol, argty::Symbol) = eval(Core, :($typ(@nospecialize n::$argty) = $(Expr(:new, typ, :n))))
-_new(:LabelNode, :Int)
 _new(:GotoNode, :Int)
 _new(:NewvarNode, :SlotNumber)
 _new(:QuoteNode, :Any)
@@ -357,10 +371,17 @@ eval(Core, :(SlotNumber(n::Int) = $(Expr(:new, :SlotNumber, :n))))
 eval(Core, :(TypedSlot(n::Int, @nospecialize(t)) = $(Expr(:new, :TypedSlot, :n, :t))))
 eval(Core, :(PhiNode(edges::Array{Any, 1}, values::Array{Any, 1}) = $(Expr(:new, :PhiNode, :edges, :values))))
 eval(Core, :(PiNode(val, typ) = $(Expr(:new, :PiNode, :val, :typ))))
+eval(Core, :(PhiCNode(values::Array{Any, 1}) = $(Expr(:new, :PhiCNode, :values))))
+eval(Core, :(UpsilonNode(val) = $(Expr(:new, :UpsilonNode, :val))))
+eval(Core, :(UpsilonNode() = $(Expr(:new, :UpsilonNode))))
+eval(Core, :(LineInfoNode(@nospecialize(method), file::Symbol, line::Int, inlined_at::Int) =
+             $(Expr(:new, :LineInfoNode, :method, :file, :line, :inlined_at))))
 
 Module(name::Symbol=:anonymous, std_imports::Bool=true) = ccall(:jl_f_new_module, Ref{Module}, (Any, Bool), name, std_imports)
 
-Task(@nospecialize(f)) = ccall(:jl_new_task, Ref{Task}, (Any, Int), f, 0)
+function _Task(@nospecialize(f), reserved_stack::Int, completion_future)
+    return ccall(:jl_new_task, Ref{Task}, (Any, Any, Int), f, completion_future, reserved_stack)
+end
 
 # simple convert for use by constructors of types in Core
 # note that there is no actual conversion defined here,
@@ -421,22 +442,36 @@ Symbol(s::Symbol) = s
 
 # module providing the IR object model
 module IR
-export CodeInfo, MethodInstance, GotoNode, LabelNode,
-    NewvarNode, SSAValue, Slot, SlotNumber, TypedSlot
+export CodeInfo, MethodInstance, GotoNode,
+    NewvarNode, SSAValue, Slot, SlotNumber, TypedSlot,
+    PiNode, PhiNode, PhiCNode, UpsilonNode, LineInfoNode
 
-import Core: CodeInfo, MethodInstance, GotoNode, LabelNode,
-    NewvarNode, SSAValue, Slot, SlotNumber, TypedSlot
+import Core: CodeInfo, MethodInstance, GotoNode,
+    NewvarNode, SSAValue, Slot, SlotNumber, TypedSlot,
+    PiNode, PhiNode, PhiCNode, UpsilonNode, LineInfoNode
+
 end
 
 # docsystem basics
+const unescape = Symbol("hygienic-scope")
 macro doc(x...)
-    atdoc(__source__, __module__, x...)
+    docex = atdoc(__source__, __module__, x...)
+    isa(docex, Expr) && docex.head === :escape && return docex
+    return Expr(:escape, Expr(unescape, docex, typeof(atdoc).name.module))
 end
 macro __doc__(x)
-    Expr(:escape, Expr(:block, Expr(:meta, :doc), x))
+    return Expr(:escape, Expr(:block, Expr(:meta, :doc), x))
 end
 atdoc     = (source, mod, str, expr) -> Expr(:escape, expr)
 atdoc!(λ) = global atdoc = λ
+
+# macros for big integer syntax
+macro int128_str end
+macro uint128_str end
+macro big_str end
+
+# macro for command syntax
+macro cmd end
 
 
 # simple stand-alone print definitions for debugging
@@ -512,43 +547,18 @@ NamedTuple{names}(args::Tuple) where {names} = NamedTuple{names,typeof(args)}(ar
 
 using .Intrinsics: sle_int, add_int
 
-macro generated()
-    return Expr(:generated)
-end
-
-function NamedTuple{names,T}(args::T) where {names, T <: Tuple}
-    if @generated
-        N = nfields(names)
-        flds = Array{Any,1}(undef, N)
-        i = 1
-        while sle_int(i, N)
-            arrayset(false, flds, :(getfield(args, $i)), i)
-            i = add_int(i, 1)
-        end
-        Expr(:new, :(NamedTuple{names,T}), flds...)
-    else
-        N = nfields(names)
-        NT = NamedTuple{names,T}
-        flds = Array{Any,1}(undef, N)
-        i = 1
-        while sle_int(i, N)
-            arrayset(false, flds, getfield(args, i), i)
-            i = add_int(i, 1)
-        end
-        ccall(:jl_new_structv, Any, (Any, Ptr{Cvoid}, UInt32), NT,
-              ccall(:jl_array_ptr, Ptr{Cvoid}, (Any,), flds), toUInt32(N))::NT
-    end
-end
+eval(Core, :(NamedTuple{names,T}(args::T) where {names, T <: Tuple} =
+             $(Expr(:splatnew, :(NamedTuple{names,T}), :args))))
 
 # constructors for built-in types
 
 import .Intrinsics: eq_int, trunc_int, lshr_int, sub_int, shl_int, bitcast, sext_int, zext_int, and_int
 
-throw_inexacterror(f::Symbol, T::Type, val) = (@_noinline_meta; throw(InexactError(f, T, val)))
+throw_inexacterror(f::Symbol, @nospecialize(T), val) = (@_noinline_meta; throw(InexactError(f, T, val)))
 
 function is_top_bit_set(x)
     @_inline_meta
-    eq_int(trunc_int(Int8, lshr_int(x, sub_int(shl_int(sizeof(x), 3), 1))), trunc_int(Int8, 1))
+    eq_int(trunc_int(UInt8, lshr_int(x, sub_int(shl_int(sizeof(x), 3), 1))), trunc_int(UInt8, 1))
 end
 
 function is_top_bit_set(x::Union{Int8,UInt8})
@@ -588,7 +598,7 @@ toInt8(x::UInt16)     = checked_trunc_sint(Int8, check_top_bit(x))
 toInt8(x::UInt32)     = checked_trunc_sint(Int8, check_top_bit(x))
 toInt8(x::UInt64)     = checked_trunc_sint(Int8, check_top_bit(x))
 toInt8(x::UInt128)    = checked_trunc_sint(Int8, check_top_bit(x))
-toInt8(x::Bool)       = and_int(zext_int(Int8, x), Int8(1))
+toInt8(x::Bool)       = and_int(bitcast(Int8, x), Int8(1))
 toInt16(x::Int8)      = sext_int(Int16, x)
 toInt16(x::Int16)     = x
 toInt16(x::Int32)     = checked_trunc_sint(Int16, x)
@@ -643,7 +653,7 @@ toUInt8(x::UInt16)    = checked_trunc_uint(UInt8, x)
 toUInt8(x::UInt32)    = checked_trunc_uint(UInt8, x)
 toUInt8(x::UInt64)    = checked_trunc_uint(UInt8, x)
 toUInt8(x::UInt128)   = checked_trunc_uint(UInt8, x)
-toUInt8(x::Bool)      = and_int(zext_int(UInt8, x), UInt8(1))
+toUInt8(x::Bool)      = and_int(bitcast(UInt8, x), UInt8(1))
 toUInt16(x::Int8)     = sext_int(UInt16, check_top_bit(x))
 toUInt16(x::Int16)    = bitcast(UInt16, check_top_bit(x))
 toUInt16(x::Int32)    = checked_trunc_uint(UInt16, x)
@@ -711,6 +721,7 @@ Int64(x::Ptr) = Int64(UInt32(x))
 UInt64(x::Ptr) = UInt64(UInt32(x))
 end
 Ptr{T}(x::Union{Int,UInt,Ptr}) where {T} = bitcast(Ptr{T}, x)
+Ptr{T}() where {T} = Ptr{T}(0)
 
 Signed(x::UInt8)    = Int8(x)
 Unsigned(x::Int8)   = UInt8(x)

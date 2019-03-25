@@ -25,12 +25,16 @@ for c in child_nodes(root(xdoc))
             id = attribute(ce, "id")
             U = string(map(s -> Char(parse(Int, s, base = 16)),
                            split(id[2:end], "-"))...)
-            if contains(L, r"^\\[A-Za-z]+$") && !isa(U,String)
+            if occursin(r"^\\[A-Za-z]+$", L) && !isa(U,String)
                 if L in Ls
                     println("# duplicated symbol $L ($id)")
                 else
                     if U[1] == '\u22a5' # unicode.xml incorrectly uses \perp for \bot
                         L = "\\bot"
+                    elseif U[1] == '\u21be'
+                        L = "\\upharpoonright"
+                    elseif U[1] == '\u21bf'
+                        L = "\\upharpoonleft"
                     end
                     push!(latexsym, (L, U))
                     push!(Ls, L)
@@ -471,8 +475,8 @@ const latex_symbols = Dict(
     "\\circlearrowright" => "↻",
     "\\leftharpoonup" => "↼",
     "\\leftharpoondown" => "↽",
-    "\\upharpoonleft" => "↾",
-    "\\upharpoonright" => "↿",
+    "\\upharpoonright" => "↾",
+    "\\upharpoonleft" => "↿",
     "\\rightharpoonup" => "⇀",
     "\\rightharpoondown" => "⇁",
     "\\downharpoonright" => "⇂",

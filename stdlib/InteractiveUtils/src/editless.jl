@@ -84,14 +84,22 @@ end
 
 """
     edit(function, [types])
+    edit(module)
 
-Edit the definition of a function, optionally specifying a tuple of types to
-indicate which method to edit. The editor can be changed by setting `JULIA_EDITOR`,
-`VISUAL` or `EDITOR` as an environment variable.
+Edit the definition of a function, optionally specifying a tuple of types to indicate which
+method to edit. For modules, open the main source file. The module needs to be loaded with
+`using` or `import` first.
+
+!!! compat "Julia 1.1"
+    `edit` on modules requires at least Julia 1.1.
+
+The editor can be changed by setting `JULIA_EDITOR`, `VISUAL` or `EDITOR` as an environment
+variable.
 """
 edit(f)                   = edit(functionloc(f)...)
 edit(f, @nospecialize t)  = edit(functionloc(f,t)...)
 edit(file, line::Integer) = error("could not find source file for function")
+edit(m::Module) = edit(pathof(m))
 
 # terminal pager
 
@@ -100,11 +108,13 @@ if Sys.iswindows()
         pager = shell_split(get(ENV, "PAGER", "more"))
         g = pager[1] == "more" ? "" : "g"
         run(Cmd(`$pager +$(line)$(g) \"$file\"`, windows_verbatim = true))
+        nothing
     end
 else
     function less(file::AbstractString, line::Integer)
         pager = shell_split(get(ENV, "PAGER", "less"))
         run(`$pager +$(line)g $file`)
+        nothing
     end
 end
 

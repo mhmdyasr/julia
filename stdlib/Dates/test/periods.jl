@@ -247,8 +247,10 @@ end
     @test Dates.Millisecond(1) == Dates.Millisecond(1)
     @test_throws MethodError Dates.Year(1) < Dates.Millisecond(1)
     @test_throws MethodError Dates.Millisecond(1) < Dates.Year(1)
-    @test_throws MethodError Dates.Year(1) == Dates.Millisecond(1)
-    @test_throws MethodError Dates.Millisecond(1) == Dates.Year(1)
+
+    # issue #27076
+    @test Dates.Year(1) != Dates.Millisecond(1)
+    @test Dates.Millisecond(1) != Dates.Year(1)
 end
 
 struct Beat <: Dates.Period
@@ -424,6 +426,11 @@ end
         @test y == z
         @test hash(y) == hash(z)
     end
+end
+
+@testset "#30832" begin
+    @test Dates.toms(Dates.Second(1) + Dates.Nanosecond(1)) == 1e3
+    @test Dates.tons(Dates.Second(1) + Dates.Nanosecond(1)) == 1e9 + 1
 end
 
 end

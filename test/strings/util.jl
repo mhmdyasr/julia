@@ -50,8 +50,10 @@ end
     @test strip("  ") == ""
     @test strip("   ") == ""
     @test strip("\t  hi   \n") == "hi"
+    @test strip(" \u2009 hi \u2009 ") == "hi"
     @test strip("foobarfoo", ['f','o']) == "bar"
     @test strip("foobarfoo", ('f','o')) == "bar"
+    @test strip(ispunct, "¡Hola!") == "Hola"
 
     for s in ("", " ", " abc", "abc ", "  abc  "),
         f in (lstrip, rstrip, strip)
@@ -72,6 +74,11 @@ end
             @test typeof(fb) == SubString{T}
         end
     end
+
+    @test lstrip(isnumeric, "0123abc") == "abc"
+    @test rstrip(isnumeric, "abc0123") == "abc"
+    @test lstrip("ello", ['e','o']) == "llo"
+    @test rstrip("ello", ['e','o']) == "ell"
 end
 
 @testset "rsplit/split" begin
@@ -88,12 +95,18 @@ end
     @test split("", ',') == [""]
     @test split(",", ',') == ["",""]
     @test split(",,", ',') == ["","",""]
-    @test split("", ','  ; keep=false) == []
-    @test split(",", ',' ; keep=false) == []
-    @test split(",,", ','; keep=false) == []
+    @test split("", ','  ; keepempty=false) == []
+    @test split(",", ',' ; keepempty=false) == []
+    @test split(",,", ','; keepempty=false) == []
 
     @test split("a b c") == ["a","b","c"]
     @test split("a  b \t c\n") == ["a","b","c"]
+    @test split("α  β \u2009 γ\n") == ["α","β","γ"]
+
+    @test split("a b c"; limit=2) == ["a","b c"]
+    @test split("a  b \t c\n"; limit=3) == ["a","b","\t c\n"]
+    @test split("a b c"; keepempty=true) == ["a","b","c"]
+    @test split("a  b \t c\n"; keepempty=true) == ["a","","b","","","c",""]
 
     @test rsplit("foo,bar,baz", 'x') == ["foo,bar,baz"]
     @test rsplit("foo,bar,baz", ',') == ["foo","bar","baz"]
@@ -108,24 +121,29 @@ end
     @test rsplit(",", ',') == ["",""]
     @test rsplit(",,", ',') == ["","",""]
     @test rsplit(",,", ','; limit=2) == [",",""]
-    @test rsplit("", ','  ; keep=false) == []
-    @test rsplit(",", ',' ; keep=false) == []
-    @test rsplit(",,", ','; keep=false) == []
+    @test rsplit("", ','  ; keepempty=false) == []
+    @test rsplit(",", ',' ; keepempty=false) == []
+    @test rsplit(",,", ','; keepempty=false) == []
 
-    #@test rsplit("a b c") == ["a","b","c"]
-    #@test rsplit("a  b \t c\n") == ["a","b","c"]
+    @test rsplit("a b c") == ["a","b","c"]
+    @test rsplit("a  b \t c\n") == ["a","b","c"]
+
+    @test rsplit("a b c"; limit=2) == ["a b", "c"]
+    @test rsplit("a  b \t c\n"; limit=3) == ["a ","b","c"]
+    @test rsplit("a b c"; keepempty=true) == ["a","b","c"]
+    @test rsplit("a  b \t c\n"; keepempty=true) == ["a","","b","","","c",""]
 
     let str = "a.:.ba..:..cba.:.:.dcba.:."
     @test split(str, ".:.") == ["a","ba.",".cba",":.dcba",""]
-    @test split(str, ".:."; keep=false) == ["a","ba.",".cba",":.dcba"]
+    @test split(str, ".:."; keepempty=false) == ["a","ba.",".cba",":.dcba"]
     @test split(str, ".:.") == ["a","ba.",".cba",":.dcba",""]
     @test split(str, r"\.(:\.)+") == ["a","ba.",".cba","dcba",""]
-    @test split(str, r"\.(:\.)+"; keep=false) == ["a","ba.",".cba","dcba"]
+    @test split(str, r"\.(:\.)+"; keepempty=false) == ["a","ba.",".cba","dcba"]
     @test split(str, r"\.+:\.+") == ["a","ba","cba",":.dcba",""]
-    @test split(str, r"\.+:\.+"; keep=false) == ["a","ba","cba",":.dcba"]
+    @test split(str, r"\.+:\.+"; keepempty=false) == ["a","ba","cba",":.dcba"]
 
     @test rsplit(str, ".:.") == ["a","ba.",".cba.:","dcba",""]
-    @test rsplit(str, ".:."; keep=false) == ["a","ba.",".cba.:","dcba"]
+    @test rsplit(str, ".:."; keepempty=false) == ["a","ba.",".cba.:","dcba"]
     @test rsplit(str, ".:."; limit=2) == ["a.:.ba..:..cba.:.:.dcba", ""]
     @test rsplit(str, ".:."; limit=3) == ["a.:.ba..:..cba.:", "dcba", ""]
     @test rsplit(str, ".:."; limit=4) == ["a.:.ba.", ".cba.:", "dcba", ""]
@@ -257,7 +275,7 @@ end
     # test replace with a count for String and GenericString
     # check that replace is a no-op if count==0
     for s in ["aaa", Test.GenericString("aaa")]
-        # @test replace("aaa", 'a' => 'z', count=0) == "aaa" # enable when undeprecated
+        @test replace("aaa", 'a' => 'z', count=0) == "aaa"
         @test replace(s, 'a' => 'z', count=1) == "zaa"
         @test replace(s, 'a' => 'z', count=2) == "zza"
         @test replace(s, 'a' => 'z', count=3) == "zzz"
@@ -284,6 +302,7 @@ end
     @test chomp("foo\r\n") == "foo"
     @test chomp("fo∀\r\n") == "fo∀"
     @test chomp("fo∀") == "fo∀"
+    @test chop("") == ""
     @test chop("fooε") == "foo"
     @test chop("foεo") == "foε"
     @test chop("∃∃∃∃") == "∃∃∃"
@@ -314,7 +333,7 @@ end
     bin_val = hex2bytes(hex_str)
 
     @test div(length(hex_str), 2) == length(bin_val)
-    @test hex_str == bytes2hex(bin_val)
+    @test hex_str == bytes2hex(bin_val) == sprint(bytes2hex, bin_val)
 
     bin_val = hex2bytes("07bf")
     @test bin_val[1] == 7

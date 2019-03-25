@@ -10,6 +10,7 @@ export
     Threads,
     Iterators,
     Broadcast,
+    MathConstants,
 
 # Types
     AbstractChannel,
@@ -84,6 +85,7 @@ export
     StridedVector,
     SubArray,
     SubString,
+    SubstitutionString,
     Timer,
     UnitRange,
     Val,
@@ -122,7 +124,6 @@ export
     InvalidStateException,
     KeyError,
     MissingException,
-    ParseError,
     SystemError,
     StringIndexError,
 
@@ -212,7 +213,6 @@ export
     asind,
     asinh,
     atan,
-    atan2,
     atand,
     atanh,
     big,
@@ -261,7 +261,6 @@ export
     floor,
     fma,
     frexp,
-    gamma,
     gcd,
     gcdx,
     hypot,
@@ -285,8 +284,6 @@ export
     ldexp,
     leading_ones,
     leading_zeros,
-    lfact,
-    lgamma,
     log,
     log10,
     log1p,
@@ -299,7 +296,6 @@ export
     muladd,
     nextfloat,
     nextpow,
-    nextpow2,
     nextprod,
     numerator,
     one,
@@ -307,12 +303,11 @@ export
     powermod,
     prevfloat,
     prevpow,
-    prevpow2,
     rad2deg,
     rationalize,
     real,
-    realmax,
-    realmin,
+    floatmax,
+    floatmin,
     reim,
     reinterpret,
     rem,
@@ -324,7 +319,6 @@ export
     sign,
     signbit,
     signed,
-    signif,
     significand,
     sin,
     sinc,
@@ -350,16 +344,10 @@ export
     ≈,
     ≉,
 
-# specfun
-    beta,
-    lbeta,
-
 # arrays
     axes,
     broadcast!,
     broadcast,
-    broadcast_getindex,
-    broadcast_setindex!,
     cat,
     checkbounds,
     checkindex,
@@ -377,7 +365,10 @@ export
     cumsum!,
     accumulate,
     accumulate!,
+    eachcol,
     eachindex,
+    eachrow,
+    eachslice,
     extrema,
     fill!,
     fill,
@@ -393,7 +384,6 @@ export
     isperm,
     issorted,
     last,
-    linearindices,
     mapslices,
     max,
     maximum!,
@@ -423,17 +413,14 @@ export
     rot180,
     rotl90,
     rotr90,
-    shuffle,
-    shuffle!,
     size,
     selectdim,
     sort!,
     sort,
-    sortcols,
     sortperm,
     sortperm!,
-    sortrows,
-    squeeze,
+    sortslices,
+    dropdims,
     step,
     stride,
     strides,
@@ -446,7 +433,6 @@ export
     zeros,
 
 # search, find, match and related functions
-    contains,
     eachmatch,
     endswith,
     findall,
@@ -459,6 +445,7 @@ export
     findnext,
     findprev,
     match,
+    occursin,
     searchsorted,
     searchsortedfirst,
     searchsortedlast,
@@ -471,7 +458,6 @@ export
 
 # bitarrays
     falses,
-    flipbits!,
     trues,
 
 # dequeues
@@ -568,10 +554,10 @@ export
     escape_string,
     hex2bytes,
     hex2bytes!,
-    isalpha,
     isascii,
     iscntrl,
     isdigit,
+    isletter,
     islowercase,
     isnumeric,
     isprint,
@@ -621,9 +607,6 @@ export
     summary,
 
 # logging
-    info,
-    logging,
-    warn,
     @debug,
     @info,
     @warn,
@@ -637,25 +620,8 @@ export
     get_zero_subnormals,
     set_zero_subnormals,
 
-# statistics
-    cor,
-    cov,
-    mean!,
-    mean,
-    median!,
-    median,
-    middle,
-    quantile!,
-    quantile,
-    std,
-    stdm,
-    var,
-    varm,
-
 # iteration
-    done,
-    next,
-    start,
+    iterate,
 
     enumerate,  # re-exported from Iterators
     zip,
@@ -675,6 +641,7 @@ export
 
 # tasks and conditions
     Condition,
+    Event,
     current_task,
     islocked,
     istaskdone,
@@ -705,6 +672,8 @@ export
     ismissing,
     missing,
     skipmissing,
+    something,
+    isnothing,
 
 # time
     sleep,
@@ -724,14 +693,18 @@ export
 
 # types
     convert,
-    # getproperty,
-    # setproperty!,
+    getproperty,
+    setproperty!,
     fieldoffset,
     fieldname,
     fieldnames,
     fieldcount,
-    # propertynames,
+    fieldtypes,
+    hasfield,
+    propertynames,
+    hasproperty,
     isabstracttype,
+    isbitstype,
     isprimitivetype,
     isstructtype,
     isconcretetype,
@@ -765,6 +738,7 @@ export
     methods,
     nameof,
     parentmodule,
+    pathof,
     names,
     which,
     @isdefined,
@@ -784,7 +758,6 @@ export
 # misc
     atexit,
     atreplinit,
-    clipboard,
     exit,
     ntuple,
 
@@ -867,6 +840,7 @@ export
     splitdir,
     splitdrive,
     splitext,
+    splitpath,
 
 # filesystem operations
     cd,
@@ -924,7 +898,7 @@ export
     withenv,
 
 # C interface
-    cfunction,
+    @cfunction,
     cglobal,
     disable_sigint,
     pointer,
@@ -975,7 +949,6 @@ export
     @allocated,
 
     # tasks
-    @schedule,
     @sync,
     @async,
     @task,
@@ -995,6 +968,7 @@ export
     @inline,
     @noinline,
     @nospecialize,
+    @specialize,
     @polly,
 
     @assert,
