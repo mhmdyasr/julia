@@ -5,9 +5,10 @@
 end
 
 @testset "nonmissingtype" begin
-    @test Base.nonmissingtype(Union{Int, Missing}) == Int
-    @test Base.nonmissingtype(Any) == Any
-    @test Base.nonmissingtype(Missing) == Union{}
+    @test nonmissingtype(Union{Int, Missing}) == Int
+    @test nonmissingtype(Union{Rational, Missing}) == Rational
+    @test nonmissingtype(Any) == Any
+    @test nonmissingtype(Missing) == Union{}
 end
 
 @testset "convert" begin
@@ -15,6 +16,7 @@ end
     @test convert(Union{Int, Missing}, 1.0) === 1
     @test convert(Union{Nothing, Missing}, missing) === missing
     @test convert(Union{Nothing, Missing}, nothing) === nothing
+    @test convert(Union{Missing, Nothing, Float64}, 1) === 1.0
 
     @test_throws MethodError convert(Missing, 1)
     @test_throws MethodError convert(Union{Nothing, Missing}, 1)
@@ -156,12 +158,14 @@ Base.one(::Type{Unit}) = 1
                             identity, zero, one, oneunit,
                             iseven, isodd, ispow2,
                             isfinite, isinf, isnan, iszero,
-                            isinteger, isreal, transpose, adjoint, float]
+                            isinteger, isreal, transpose, adjoint, float, inv]
 
     # All elementary functions return missing when evaluating missing
     for f in elementary_functions
         @test ismissing(f(missing))
     end
+
+    @test ismissing(clamp(missing, 1, 2))
 
     for T in (Int, Float64)
         @test zero(Union{T, Missing}) === T(0)
@@ -217,7 +221,7 @@ end
 @testset "printing" begin
     @test sprint(show, missing) == "missing"
     @test sprint(show, missing, context=:compact => true) == "missing"
-    @test sprint(show, [missing]) == "$Missing[missing]"
+    @test sprint(show, [missing]) == "[missing]"
     @test sprint(show, [1 missing]) == "$(Union{Int, Missing})[1 missing]"
     b = IOBuffer()
     display(TextDisplay(b), [missing])
@@ -238,6 +242,14 @@ end
     @test isa(x, Vector{Union{Int, Missing}})
     @test isequal(x, [missing])
     @test eltype(adjoint([1, missing])) == Union{Int, Missing}
+    # issue #32777
+    let a = [0, nothing, 0.0, missing]
+        @test a[1] === 0.0
+        @test a[2] === nothing
+        @test a[3] === 0.0
+        @test a[4] === missing
+        @test a isa Vector{Union{Missing, Nothing, Float64}}
+    end
 end
 
 @testset "== and != on arrays" begin
@@ -428,24 +440,31 @@ end
         for T in (Int, Float64),
             A in (rand(T, 10), rand(T, 1000), rand(T, 10000))
             if T === Int
-                @test sum(A) === sum(skipmissing(A)) ===
-                    reduce(+, skipmissing(A)) === mapreduce(identity, +, skipmissing(A))
+                @test sum(A) === @inferred(sum(skipmissing(A))) ===
+                    @inferred(reduce(+, skipmissing(A))) ===
+                    @inferred(mapreduce(identity, +, skipmissing(A)))
             else
-                @test sum(A) ≈ sum(skipmissing(A)) ===
-                    reduce(+, skipmissing(A)) === mapreduce(identity, +, skipmissing(A))
+                @test sum(A) ≈ @inferred(sum(skipmissing(A))) ===
+                    @inferred(reduce(+, skipmissing(A))) ===
+                    @inferred(mapreduce(identity, +, skipmissing(A)))
             end
-            @test mapreduce(cos, *, A) ≈ mapreduce(cos, *, skipmissing(A))
+            @test mapreduce(cos, *, A) ≈
+                @inferred(mapreduce(cos, *, skipmissing(A)))
 
             B = Vector{Union{T,Missing}}(A)
             replace!(x -> rand(Bool) ? x : missing, B)
             if T === Int
-                @test sum(collect(skipmissing(B))) === sum(skipmissing(B)) ===
-                    reduce(+, skipmissing(B)) === mapreduce(identity, +, skipmissing(B))
+                @test sum(collect(skipmissing(B))) ===
+                    @inferred(sum(skipmissing(B))) ===
+                    @inferred(reduce(+, skipmissing(B))) ===
+                    @inferred(mapreduce(identity, +, skipmissing(B)))
             else
-                @test sum(collect(skipmissing(B))) ≈ sum(skipmissing(B)) ===
-                    reduce(+, skipmissing(B)) === mapreduce(identity, +, skipmissing(B))
+                @test sum(collect(skipmissing(B))) ≈ @inferred(sum(skipmissing(B))) ===
+                    @inferred(reduce(+, skipmissing(B))) ===
+                    @inferred(mapreduce(identity, +, skipmissing(B)))
             end
-            @test mapreduce(cos, *, collect(skipmissing(A))) ≈ mapreduce(cos, *, skipmissing(A))
+            @test mapreduce(cos, *, collect(skipmissing(A))) ≈
+                @inferred(mapreduce(cos, *, skipmissing(A)))
 
             # Test block full of missing values
             B[1:length(B)÷2] .= missing
@@ -514,4 +533,9 @@ mutable struct Obj; x; end
     mk_wr(ref, wref)
     @test ismissing(wref[1] == missing)
     @test ismissing(missing == wref[1])
+end
+
+@testset "showerror missing function" begin
+    me = try missing(1) catch e e end
+    @test sprint(showerror, me) == "MethodError: objects of type Missing are not callable"
 end

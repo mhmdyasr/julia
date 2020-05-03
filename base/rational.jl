@@ -4,18 +4,25 @@
     Rational{T<:Integer} <: Real
 
 Rational number type, with numerator and denominator of type `T`.
+Rationals are checked for overflow.
 """
 struct Rational{T<:Integer} <: Real
     num::T
     den::T
 
     function Rational{T}(num::Integer, den::Integer) where T<:Integer
-        num == den == zero(T) && __throw_rational_argerror(T)
-        num2, den2 = (sign(den) < 0) ? divgcd(-num, -den) : divgcd(num, den)
-        new(num2, den2)
+        num == den == zero(T) && __throw_rational_argerror_zero(T)
+        num2, den2 = divgcd(num, den)
+        if T<:Signed && signbit(den2)
+            den2 = -den2
+            signbit(den2) && __throw_rational_argerror_typemin(T)
+            num2 = -num2
+        end
+        return new(num2, den2)
     end
 end
-@noinline __throw_rational_argerror(T) = throw(ArgumentError("invalid rational: zero($T)//zero($T)"))
+@noinline __throw_rational_argerror_zero(T) = throw(ArgumentError("invalid rational: zero($T)//zero($T)"))
+@noinline __throw_rational_argerror_typemin(T) = throw(ArgumentError("invalid rational: denominator can't be typemin($T)"))
 
 Rational(n::T, d::T) where {T<:Integer} = Rational{T}(n,d)
 Rational(n::Integer, d::Integer) = Rational(promote(n,d)...)
@@ -237,7 +244,9 @@ typemax(::Type{Rational{T}}) where {T<:Integer} = one(T)//zero(T)
 
 isinteger(x::Rational) = x.den == 1
 
++(x::Rational) = (+x.num) // x.den
 -(x::Rational) = (-x.num) // x.den
+
 function -(x::Rational{T}) where T<:BitSigned
     x.num == typemin(T) && throw(OverflowError("rational numerator is typemin(T)"))
     (-x.num) // x.den
@@ -254,6 +263,14 @@ for (op,chop) in ((:+,:checked_add), (:-,:checked_sub),
             xd, yd = divgcd(x.den, y.den)
             Rational(($chop)(checked_mul(x.num,yd), checked_mul(y.num,xd)), checked_mul(x.den,yd))
         end
+
+        function ($op)(x::Rational, y::Integer)
+            Rational(($chop)(x.num, checked_mul(x.den, y)), x.den)
+        end
+
+        function ($op)(y::Integer, x::Rational)
+            Rational(($chop)(checked_mul(x.den, y), x.num), x.den)
+        end
     end
 end
 
@@ -262,6 +279,11 @@ function *(x::Rational, y::Rational)
     xd,yn = divgcd(x.den,y.num)
     checked_mul(xn,yn) // checked_mul(xd,yd)
 end
+function *(x::Rational, y::Integer)
+    xd, yn = divgcd(x.den, y)
+    checked_mul(x.num, yn) // xd
+end
+*(x::Integer, y::Rational) = *(y, x)
 /(x::Rational, y::Rational) = x//y
 /(x::Rational, y::Complex{<:Union{Integer,Rational}}) = x//y
 inv(x::Rational) = Rational(x.den, x.num)
@@ -296,11 +318,11 @@ for rel in (:<,:<=,:cmp)
     for (Tx,Ty) in ((Rational,AbstractFloat), (AbstractFloat,Rational))
         @eval function ($rel)(x::$Tx, y::$Ty)
             if isnan(x)
-                $(rel == :cmp ? :(return isnan(y) ? 0 : 1) :
+                $(rel === :cmp ? :(return isnan(y) ? 0 : 1) :
                                 :(return false))
             end
             if isnan(y)
-                $(rel == :cmp ? :(return -1) :
+                $(rel === :cmp ? :(return -1) :
                                 :(return false))
             end
 
@@ -347,82 +369,51 @@ end
 ==(z::Complex , x::Rational) = isreal(z) & (real(z) == x)
 ==(x::Rational, z::Complex ) = isreal(z) & (real(z) == x)
 
-for op in (:div, :fld, :cld)
+function div(x::Rational, y::Integer, r::RoundingMode)
+    xn,yn = divgcd(x.num,y)
+    div(xn, checked_mul(x.den,yn), r)
+end
+function div(x::Integer, y::Rational, r::RoundingMode)
+    xn,yn = divgcd(x,y.num)
+    div(checked_mul(xn,y.den), yn, r)
+end
+function div(x::Rational, y::Rational, r::RoundingMode)
+    xn,yn = divgcd(x.num,y.num)
+    xd,yd = divgcd(x.den,y.den)
+    div(checked_mul(xn,yd), checked_mul(xd,yn), r)
+end
+
+# For compatibility - to be removed in 2.0 when the generic fallbacks
+# are removed from div.jl
+div(x::T, y::T, r::RoundingMode) where {T<:Rational} =
+    invoke(div, Tuple{Rational, Rational, RoundingMode}, x, y, r)
+for (S, T) in ((Rational, Integer), (Integer, Rational), (Rational, Rational))
     @eval begin
-        function ($op)(x::Rational, y::Integer )
-            xn,yn = divgcd(x.num,y)
-            ($op)(xn, checked_mul(x.den,yn))
-        end
-        function ($op)(x::Integer,  y::Rational)
-            xn,yn = divgcd(x,y.num)
-            ($op)(checked_mul(xn,y.den), yn)
-        end
-        function ($op)(x::Rational, y::Rational)
-            xn,yn = divgcd(x.num,y.num)
-            xd,yd = divgcd(x.den,y.den)
-            ($op)(checked_mul(xn,yd), checked_mul(xd,yn))
-        end
+        div(x::$S, y::$T) = div(x, y, RoundToZero)
+        fld(x::$S, y::$T) = div(x, y, RoundDown)
+        cld(x::$S, y::$T) = div(x, y, RoundUp)
     end
 end
 
-trunc(::Type{T}, x::Rational) where {T} = convert(T,div(x.num,x.den))
-floor(::Type{T}, x::Rational) where {T} = convert(T,fld(x.num,x.den))
-ceil(::Type{T}, x::Rational) where {T} = convert(T,cld(x.num,x.den))
-round(::Type{T}, x::Rational, r::RoundingMode=RoundNearest) where {T} = _round_rational(T, x, r)
+trunc(::Type{T}, x::Rational) where {T} = round(T, x, RoundToZero)
+floor(::Type{T}, x::Rational) where {T} = round(T, x, RoundDown)
+ceil(::Type{T}, x::Rational) where {T} = round(T, x, RoundUp)
 
-function _round_rational(::Type{T}, x::Rational{Tr}, ::RoundingMode{:Nearest}) where {T,Tr}
-    if denominator(x) == zero(Tr) && T <: Integer
-        throw(DivideError())
-    elseif denominator(x) == zero(Tr)
+round(x::Rational, r::RoundingMode=RoundNearest) = round(typeof(x), x, r)
+
+function round(::Type{T}, x::Rational{Tr}, r::RoundingMode=RoundNearest) where {T,Tr}
+    if iszero(denominator(x)) && !(T <: Integer)
         return convert(T, copysign(one(Tr)//zero(Tr), numerator(x)))
     end
-    q,r = divrem(numerator(x), denominator(x))
-    s = q
-    if abs(r) >= abs((denominator(x)-copysign(Tr(4), numerator(x))+one(Tr)+iseven(q))>>1 + copysign(Tr(2), numerator(x)))
-        s += copysign(one(Tr),numerator(x))
-    end
-    convert(T, s)
-end
-
-function _round_rational(::Type{T}, x::Rational{Tr}, ::RoundingMode{:NearestTiesAway}) where {T,Tr}
-    if denominator(x) == zero(Tr) && T <: Integer
-        throw(DivideError())
-    elseif denominator(x) == zero(Tr)
-        return convert(T, copysign(one(Tr)//zero(Tr), numerator(x)))
-    end
-    q,r = divrem(numerator(x), denominator(x))
-    s = q
-    if abs(r) >= abs((denominator(x)-copysign(Tr(4), numerator(x))+one(Tr))>>1 + copysign(Tr(2), numerator(x)))
-        s += copysign(one(Tr),numerator(x))
-    end
-    convert(T, s)
-end
-
-function _round_rational(::Type{T}, x::Rational{Tr}, ::RoundingMode{:NearestTiesUp}) where {T,Tr}
-    if denominator(x) == zero(Tr) && T <: Integer
-        throw(DivideError())
-    elseif denominator(x) == zero(Tr)
-        return convert(T, copysign(one(Tr)//zero(Tr), numerator(x)))
-    end
-    q,r = divrem(numerator(x), denominator(x))
-    s = q
-    if abs(r) >= abs((denominator(x)-copysign(Tr(4), numerator(x))+one(Tr)+(numerator(x)<0))>>1 + copysign(Tr(2), numerator(x)))
-        s += copysign(one(Tr),numerator(x))
-    end
-    convert(T, s)
+    convert(T, div(numerator(x), denominator(x), r))
 end
 
 function round(::Type{T}, x::Rational{Bool}, ::RoundingMode=RoundNearest) where T
-    if denominator(x) == false && (T <: Union{Integer, Bool})
+    if denominator(x) == false && (T <: Integer)
         throw(DivideError())
     end
     convert(T, x)
 end
-
-trunc(x::Rational{T}) where {T} = Rational(trunc(T,x))
-floor(x::Rational{T}) where {T} = Rational(floor(T,x))
-ceil(x::Rational{T}) where {T} = Rational(ceil(T,x))
-round(x::Rational{T}) where {T} = Rational(round(T,x))
 
 function ^(x::Rational, n::Integer)
     n >= 0 ? power_by_squaring(x,n) : power_by_squaring(inv(x),-n)
@@ -445,3 +436,19 @@ function lerpi(j::Integer, d::Integer, a::Rational, b::Rational)
 end
 
 float(::Type{Rational{T}}) where {T<:Integer} = float(T)
+
+gcd(x::Rational, y::Rational) = gcd(x.num, y.num) // lcm(x.den, y.den)
+lcm(x::Rational, y::Rational) = lcm(x.num, y.num) // gcd(x.den, y.den)
+function gcdx(x::Rational, y::Rational)
+    c = gcd(x, y)
+    if iszero(c.num)
+        a, b = one(c.num), c.num
+    elseif iszero(c.den)
+        a = ifelse(iszero(x.den), one(c.den), c.den)
+        b = ifelse(iszero(y.den), one(c.den), c.den)
+    else
+        idiv(x, c) = div(x.num, c.num) * div(c.den, x.den)
+        _, a, b = gcdx(idiv(x, c), idiv(y, c))
+    end
+    c, a, b
+end

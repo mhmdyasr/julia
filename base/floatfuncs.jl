@@ -120,13 +120,14 @@ To extend `round` to new numeric types, it is typically sufficient to define `Ba
 """
 round(T::Type, x)
 
-round(::Type{T}, x::AbstractFloat, r::RoundingMode{:ToZero}) where {T<:Integer} = trunc(T, x)
-round(::Type{T}, x::AbstractFloat, r::RoundingMode) where {T<:Integer} = trunc(T, round(x,r))
+function round(::Type{T}, x::AbstractFloat, r::RoundingMode) where {T<:Integer}
+    r != RoundToZero && (x = round(x,r))
+    trunc(T, x)
+end
 
 # NOTE: this relies on the current keyword dispatch behaviour (#9498).
 function round(x::Real, r::RoundingMode=RoundNearest;
                digits::Union{Nothing,Integer}=nothing, sigdigits::Union{Nothing,Integer}=nothing, base::Union{Nothing,Integer}=nothing)
-    isfinite(x) || return x
     if digits === nothing
         if sigdigits === nothing
             if base === nothing
@@ -137,10 +138,12 @@ function round(x::Real, r::RoundingMode=RoundNearest;
                 # or throw(ArgumentError("`round` cannot use `base` argument without `digits` or `sigdigits` arguments."))
             end
         else
+            isfinite(x) || return float(x)
             _round_sigdigits(x, r, sigdigits, base === nothing ? 10 : base)
         end
     else
         if sigdigits === nothing
+            isfinite(x) || return float(x)
             _round_digits(x, r, digits, base === nothing ? 10 : base)
         else
             throw(ArgumentError("`round` cannot use both `digits` and `sigdigits` arguments."))
@@ -274,6 +277,15 @@ function isapprox(x::Number, y::Number; atol::Real=0, rtol::Real=rtoldefault(x,y
     x == y || (isfinite(x) && isfinite(y) && abs(x-y) <= max(atol, rtol*max(abs(x), abs(y)))) || (nans && isnan(x) && isnan(y))
 end
 
+"""
+    isapprox(x; kwargs...) / ≈(x; kwargs...)
+
+Create a function that compares its argument to `x` using `≈`, i.e. a function equivalent to `y -> y ≈ x`.
+
+The keyword arguments supported here are the same as those in the 2-argument `isapprox`.
+"""
+isapprox(y; kwargs...) = x -> isapprox(x, y; kwargs...)
+
 const ≈ = isapprox
 """
     x ≉ y
@@ -313,7 +325,7 @@ fma_llvm(x::Float64, y::Float64, z::Float64) = fma_float(x, y, z)
 # 1.0000000009313226 = 1 + 1/2^30
 # If fma_llvm() clobbers the rounding mode, the result of 0.1 + 0.2 will be 0.3
 # instead of the properly-rounded 0.30000000000000004; check after calling fma
-if (Sys.ARCH != :i686 && fma_llvm(1.0000305f0, 1.0000305f0, -1.0f0) == 6.103609f-5 &&
+if (Sys.ARCH !== :i686 && fma_llvm(1.0000305f0, 1.0000305f0, -1.0f0) == 6.103609f-5 &&
     (fma_llvm(1.0000000009313226, 1.0000000009313226, -1.0) ==
      1.8626451500983188e-9) && 0.1 + 0.2 == 0.30000000000000004)
     fma(x::Float32, y::Float32, z::Float32) = fma_llvm(x,y,z)
