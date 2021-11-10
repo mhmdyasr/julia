@@ -10,7 +10,7 @@ This sort of scenario falls in the domain of asynchronous programming, sometimes
 also referred to as concurrent programming (since, conceptually, multiple things
 are happening at once).
 
-To address these scenarios, Julia provides `Task`s (also known by several other
+To address these scenarios, Julia provides [`Task`](@ref)s (also known by several other
 names, such as symmetric coroutines, lightweight threads, cooperative multitasking,
 or one-shot continuations).
 When a piece of computing work (in practice, executing a particular function) is designated as
@@ -26,9 +26,9 @@ calls, where the called function must finish executing before control returns to
 You can think of a `Task` as a handle to a unit of computational work to be performed.
 It has a create-start-run-finish lifecycle.
 Tasks are created by calling the `Task` constructor on a 0-argument function to run,
-or using the `@task` macro:
+or using the [`@task`](@ref) macro:
 
-```
+```julia-repl
 julia> t = @task begin; sleep(5); println("done"); end
 Task (runnable) @0x00007f13a40c0eb0
 ```
@@ -36,9 +36,9 @@ Task (runnable) @0x00007f13a40c0eb0
 `@task x` is equivalent to `Task(()->x)`.
 
 This task will wait for five seconds, and then print `done`. However, it has not
-started running yet. We can run it whenever we're ready by calling `schedule`:
+started running yet. We can run it whenever we're ready by calling [`schedule`](@ref):
 
-```
+```julia-repl
 julia> schedule(t);
 ```
 
@@ -47,15 +47,15 @@ That is because it simply adds `t` to an internal queue of tasks to run.
 Then, the REPL will print the next prompt and wait for more input.
 Waiting for keyboard input provides an opportunity for other tasks to run,
 so at that point `t` will start.
-`t` calls `sleep`, which sets a timer and stops execution.
+`t` calls [`sleep`](@ref), which sets a timer and stops execution.
 If other tasks have been scheduled, they could run then.
 After five seconds, the timer fires and restarts `t`, and you will see `done`
 printed. `t` is then finished.
 
-The `wait` function blocks the calling task until some other task finishes.
+The [`wait`](@ref) function blocks the calling task until some other task finishes.
 So for example if you type
 
-```
+```julia-repl
 julia> schedule(t); wait(t)
 ```
 
@@ -63,8 +63,8 @@ instead of only calling `schedule`, you will see a five second pause before
 the next input prompt appears. That is because the REPL is waiting for `t`
 to finish before proceeding.
 
-It is common to want to create a task and schedule it right away, so a
-macro called `@async` is provided for that purpose --- `@async x` is
+It is common to want to create a task and schedule it right away, so the
+macro [`@async`](@ref) is provided for that purpose --- `@async x` is
 equivalent to `schedule(@task x)`.
 
 ## Communicating with Channels
@@ -186,7 +186,7 @@ A channel can be visualized as a pipe, i.e., it has a write end and a read end :
 
     # we can schedule `n` instances of `foo` to be active concurrently.
     for _ in 1:n
-        @async foo()
+        errormonitor(@async foo())
     end
     ```
   * Channels are created via the `Channel{T}(sz)` constructor. The channel will only hold objects
@@ -211,7 +211,7 @@ A channel can be visualized as a pipe, i.e., it has a write end and a read end :
     julia> close(c);
 
     julia> put!(c, 2) # `put!` on a closed channel throws an exception.
-    ERROR: InvalidStateException("Channel is closed.",:closed)
+    ERROR: InvalidStateException: Channel is closed.
     Stacktrace:
     [...]
     ```
@@ -230,7 +230,7 @@ A channel can be visualized as a pipe, i.e., it has a write end and a read end :
     1
 
     julia> take!(c) # No more data available on a closed channel.
-    ERROR: InvalidStateException("Channel is closed.",:closed)
+    ERROR: InvalidStateException: Channel is closed.
     Stacktrace:
     [...]
     ```
@@ -263,10 +263,10 @@ julia> function make_jobs(n)
 
 julia> n = 12;
 
-julia> @async make_jobs(n); # feed the jobs channel with "n" jobs
+julia> errormonitor(@async make_jobs(n)); # feed the jobs channel with "n" jobs
 
 julia> for i in 1:4 # start 4 tasks to process requests in parallel
-           @async do_work()
+           errormonitor(@async do_work())
        end
 
 julia> @elapsed while n > 0 # print out results
@@ -288,6 +288,10 @@ julia> @elapsed while n > 0 # print out results
 11 finished in 0.97 seconds
 0.029772311
 ```
+
+Instead of `errormonitor(t)`, a more robust solution may be use use `bind(results, t)`, as that will
+not only log any unexpected failures, but also force the associated resources to close and propagate
+the exception everywhere.
 
 ## More task operations
 

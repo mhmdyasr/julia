@@ -17,6 +17,7 @@ using Test
     @test 5//0 == 1//0
     @test -1//0 == -1//0
     @test -7//0 == -1//0
+    @test  (-1//2) // (-2//5) == 5//4
 
     @test_throws OverflowError -(0x01//0x0f)
     @test_throws OverflowError -(typemin(Int)//1)
@@ -26,9 +27,13 @@ using Test
     @test (typemax(Int)//1) / (typemax(Int)//1) == 1
     @test (1//typemax(Int)) / (1//typemax(Int)) == 1
     @test_throws OverflowError (1//2)^63
+    @test inv((1+typemin(Int))//typemax(Int)) == -1
+    @test_throws ArgumentError inv(typemin(Int)//typemax(Int))
+    @test_throws ArgumentError Rational(0x1, typemin(Int32))
 
     @test @inferred(rationalize(Int, 3.0, 0.0)) === 3//1
     @test @inferred(rationalize(Int, 3.0, 0)) === 3//1
+    @test_throws OverflowError rationalize(UInt, -2.0)
     @test_throws ArgumentError rationalize(Int, big(3.0), -1.)
     # issue 26823
     @test_throws InexactError rationalize(Int, NaN)
@@ -37,6 +42,11 @@ using Test
     @test_throws ArgumentError 0 // 0
     @test -2 // typemin(Int) == -1 // (typemin(Int) >> 1)
     @test 2 // typemin(Int) == 1 // (typemin(Int) >> 1)
+
+    @test_throws InexactError Rational(UInt(1), typemin(Int32))
+    @test iszero(Rational{Int}(UInt(0), 1))
+    @test Rational{BigInt}(UInt(1), Int(-1)) == -1
+    @test_broken Rational{Int64}(UInt(1), typemin(Int32)) == Int64(1) // Int64(typemin(Int32))
 
     for a = -5:5, b = -5:5
         if a == b == 0; continue; end
@@ -106,6 +116,14 @@ using Test
     @test abs(one(Rational{UInt})) === one(Rational{UInt})
     @test abs(one(Rational{Int})) === one(Rational{Int})
     @test abs(-one(Rational{Int})) === one(Rational{Int})
+
+    # inf addition
+    @test 1//0 + 1//0 == 1//0
+    @test -1//0 - 1//0 == -1//0
+    @test_throws DivideError 1//0 - 1//0
+    @test_throws DivideError -1//0 + 1//0
+    @test Int128(1)//0 + 1//0 isa Rational{Int128}
+    @test 1//0 + Int128(1)//0 isa Rational{Int128}
 end
 
 @testset "Rational methods" begin
@@ -119,6 +137,8 @@ end
         @test typemax(Rational{T}) == one(T)//zero(T)
         @test widen(Rational{T}) == Rational{widen(T)}
     end
+
+    @test iszero(typemin(Rational{UInt}))
 
     @test Rational(Float32(rand_int)) == Rational(rand_int)
 
@@ -468,6 +488,8 @@ end
         @test gcd(b, a) === T(2)//T(105)
         @test lcm(a, b) === T(30)//T(7)
         if T <: Signed
+            @test gcd(-a) === a
+            @test lcm(-b) === b
             @test gcdx(a, b) === (T(2)//T(105), T(-11), T(4))
             @test gcd(-a, b) === T(2)//T(105)
             @test gcd(a, -b) === T(2)//T(105)
@@ -548,6 +570,8 @@ end
     end
     @test 1//2 * 3 == 3//2
     @test -3 * (1//2) == -3//2
+    @test (6//5) // -3 == -2//5
+    @test -4 // (-6//5) == 10//3
 
     @test_throws OverflowError UInt(1)//2 - 1
     @test_throws OverflowError 1 - UInt(5)//2
@@ -560,4 +584,57 @@ end
     @test Int8(1) + Int8(4)//(Int8(127)-Int8(1)) == Int8(65) // Int8(63)
     @test -Int32(1) // typemax(Int32) - Int32(1) == typemin(Int32) // typemax(Int32)
     @test 1 // (typemax(Int128) + BigInt(1)) - 2 == (1 + BigInt(2)*typemin(Int128)) // (BigInt(1) + typemax(Int128))
+end
+
+@testset "Promotions on binary operations with Rationals (#36277)" begin
+    inttypes = (Base.BitInteger_types..., BigInt)
+    for T in inttypes, S in inttypes
+        U = Rational{promote_type(T, S)}
+        @test typeof(one(Rational{T}) + one(S)) == typeof(one(S) + one(Rational{T})) == typeof(one(Rational{T}) + one(Rational{S})) == U
+        @test typeof(one(Rational{T}) - one(S)) == typeof(one(S) - one(Rational{T})) == typeof(one(Rational{T}) - one(Rational{S})) == U
+        @test typeof(one(Rational{T}) * one(S)) == typeof(one(S) * one(Rational{T})) == typeof(one(Rational{T}) * one(Rational{S})) == U
+        @test typeof(one(Rational{T}) // one(S)) == typeof(one(S) // one(Rational{T})) == typeof(one(Rational{T}) // one(Rational{S})) == U
+    end
+    @test (-40//3) // 0x5 == 0x5 // (-15//8) == -8//3
+    @test (-4//7) // (0x1//0x3) == (0x4//0x7) // (-1//3) == -12//7
+    @test -3//2 + 0x1//0x1 == -3//2 + 0x1 == 0x1//0x1 + (-3//2) == 0x1 + (-3//2) == -1//2
+    @test 0x3//0x5 - 2//3 == 3//5 - 0x2//0x3 == -1//15
+    @test rem(-12//5, 0x2//0x1) == rem(-12//5, 0x2) == -2//5
+    @test mod(0x3//0x1, -4//7) == mod(0x3, -4//7) == -3//7
+    @test -1//5 * 0x3//0x2 == 0x3//0x2 * -1//5 == -3//10
+    @test -2//3 * 0x1 == 0x1 * -2//3 == -2//3
+end
+
+@testset "ispow2 and iseven/isodd" begin
+    @test ispow2(4//1)
+    @test ispow2(1//8)
+    @test !ispow2(3//8)
+    @test !ispow2(0//1)
+    @test iseven(4//1) && !isodd(4//1)
+    @test !iseven(3//1) && isodd(3//1)
+    @test !iseven(3//8) && !isodd(3//8)
+end
+
+@testset "checked_den with different integer types" begin
+    @test Base.checked_den(Int8(4), Int32(8)) == Base.checked_den(Int32(4), Int32(8))
+end
+
+@testset "Rational{T} with non-concrete T (issue #41222)" begin
+    @test @inferred(Rational{Integer}(2,3)) isa Rational{Integer}
+end
+
+@testset "issue #41489" begin
+    @test Core.Compiler.return_type(+, NTuple{2, Rational}) == Rational
+    @test Core.Compiler.return_type(-, NTuple{2, Rational}) == Rational
+
+    A=Rational[1 1 1; 2 2 2; 3 3 3]
+    @test @inferred(A*A) isa Matrix{Rational}
+end
+
+@testset "issue #42560" begin
+    @test rationalize(0.5 + 0.5im) == 1//2 + 1//2*im
+    @test rationalize(float(pi)im) == 0//1 + 165707065//52746197*im
+    @test rationalize(Int8, float(pi)im) == 0//1 + 22//7*im
+    @test rationalize(1.192 + 2.233im) == 149//125 + 2233//1000*im
+    @test rationalize(Int8, 1.192 + 2.233im) == 118//99 + 67//30*im
 end
