@@ -99,7 +99,7 @@ endif
 $(BUILDDIR)/version_git.jl.phony: $(SRCDIR)/version_git.sh
 ifneq ($(NO_GIT), 1)
 	sh $< $(SRCDIR) > $@
-	@# This to avoid touching git_version.jl when it is not modified,
+	@# This to avoid touching version_git.jl when it is not modified,
 	@# so that the system image does not need to be rebuilt.
 	@if ! cmp -s $@ version_git.jl; then \
 	    $(call PRINT_PERL,) \
@@ -184,6 +184,19 @@ ifneq ($$(USE_SYSTEM_$1),0)
 SYMLINK_SYSTEM_LIBRARIES += symlink_$2
 endif
 endef
+
+# libexec executables
+symlink_p7zip: $(build_bindir)/7z$(EXE)
+
+ifneq ($(USE_SYSTEM_P7ZIP),0)
+SYMLINK_SYSTEM_LIBRARIES += symlink_p7zip
+7Z_PATH := $(shell which 7z$(EXE))
+endif
+
+$(build_bindir)/7z$(EXE):
+	[ -e "$(7Z_PATH)" ] && \
+	([ ! -e "$@" ] || rm "$@") && \
+	ln -svf "$(7Z_PATH)" "$@"
 
 # the following excludes: libuv.a, libutf8proc.a
 

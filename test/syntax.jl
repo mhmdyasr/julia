@@ -1509,6 +1509,16 @@ let ex = Meta.parse("@test27521(2) do y; y; end")
     @test macroexpand(@__MODULE__, ex) == Expr(:tuple, fex, 2)
 end
 
+# issue #43018
+module M43018
+    macro test43018(fn)
+        quote $(fn)() end
+    end
+end
+@test :(@M43018.test43018() do; end) == :(M43018.@test43018() do; end)
+@test @macroexpand(@M43018.test43018() do; end) == @macroexpand(M43018.@test43018() do; end)
+@test @M43018.test43018() do; 43018 end == 43018
+
 # issue #27129
 f27129(x = 1) = (@inline; x)
 for meth in methods(f27129)
@@ -2971,6 +2981,21 @@ end
 @generated g25678(x) = return :x
 @test g25678(7) === 7
 
+# issue 25678: module of name `Core`
+# https://github.com/JuliaLang/julia/pull/40778/files#r784416018
+@test @eval Module() begin
+    Core = 1
+    @generated f() = 1
+    f() == 1
+end
+
+# issue 25678: argument of name `tmp`
+# https://github.com/JuliaLang/julia/pull/43823#discussion_r785365312
+@test @eval Module() begin
+    @generated f(tmp) = tmp
+    f(1) === Int
+end
+
 # issue #19012
 @test Meta.parse("\U2200", raise=false) == Symbol("∀")
 @test Meta.parse("\U2203", raise=false) == Symbol("∃")
@@ -3060,3 +3085,58 @@ end
     @test err == 5 + 6
     @test x == 1
 end
+
+@test_throws ParseError Meta.parse("""
+function checkUserAccess(u::User)
+	if u.accessLevel != "user\u202e \u2066# users are not allowed\u2069\u2066"
+		return true
+	end
+	return false
+end
+""")
+
+@test_throws ParseError Meta.parse("""
+function checkUserAccess(u::User)
+	#=\u202e \u2066if (u.isAdmin)\u2069 \u2066 begin admins only =#
+		return true
+	#= end admin only \u202e \u2066end\u2069 \u2066=#
+	return false
+end
+""")
+
+@testset "empty nd arrays" begin
+    @test :([])    == Expr(:vect)
+    @test :([;])   == Expr(:ncat, 1)
+    @test :([;;])  == Expr(:ncat, 2)
+    @test :([;;;]) == Expr(:ncat, 3)
+
+    @test []    == Array{Any}(undef, 0)
+    @test [;]   == Array{Any}(undef, 0)
+    @test [;;]  == Array{Any}(undef, 0, 0)
+    @test [;;;] == Array{Any}(undef, 0, 0, 0)
+
+    @test :(T[])    == Expr(:ref, :T)
+    @test :(T[;])   == Expr(:typed_ncat, :T, 1)
+    @test :(T[;;])  == Expr(:typed_ncat, :T, 2)
+    @test :(T[;;;]) == Expr(:typed_ncat, :T, 3)
+
+    @test Int[]    == Array{Int}(undef, 0)
+    @test Int[;]   == Array{Int}(undef, 0)
+    @test Int[;;]  == Array{Int}(undef, 0, 0)
+    @test Int[;;;] == Array{Int}(undef, 0, 0, 0)
+
+    @test :([  ]) == Expr(:vect)
+    @test :([
+            ]) == Expr(:vect)
+    @test :([ ;; ]) == Expr(:ncat, 2)
+    @test :([
+             ;;
+            ]) == Expr(:ncat, 2)
+
+    @test_throws ParseError Meta.parse("[; ;]")
+    @test_throws ParseError Meta.parse("[;; ;]")
+    @test_throws ParseError Meta.parse("[;\n;]")
+end
+
+@test Meta.parseatom("@foo", 1; filename="foo", lineno=7) == (Expr(:macrocall, :var"@foo", LineNumberNode(7, :foo)), 5)
+@test Meta.parseall("@foo"; filename="foo", lineno=3) == Expr(:toplevel, LineNumberNode(3, :foo), Expr(:macrocall, :var"@foo", LineNumberNode(3, :foo)))

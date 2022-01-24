@@ -133,6 +133,7 @@ function rest end
 rest(t::Tuple) = t
 rest(t::Tuple, i::Int) = ntuple(x -> getfield(t, x+i-1), length(t)-i+1)
 rest(a::Array, i::Int=1) = a[i:end]
+rest(a::Core.SimpleVector, i::Int=1) = a[i:end]
 rest(itr, state...) = Iterators.rest(itr, state...)
 
 # Use dispatch to avoid a branch in first
@@ -550,3 +551,6 @@ end
 Returns an empty tuple, `()`.
 """
 empty(@nospecialize x::Tuple) = ()
+
+foreach(f, itr::Tuple) = foldl((_, x) -> (f(x); nothing), itr, init=nothing)
+foreach(f, itrs::Tuple...) = foldl((_, xs) -> (f(xs...); nothing), zip(itrs...), init=nothing)

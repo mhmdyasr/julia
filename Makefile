@@ -189,7 +189,7 @@ else
 JL_PRIVATE_LIBS-$(USE_SYSTEM_ZLIB) += libz
 endif
 ifeq ($(USE_LLVM_SHLIB),1)
-JL_PRIVATE_LIBS-$(USE_SYSTEM_LLVM) += libLLVM libLLVM-12jl
+JL_PRIVATE_LIBS-$(USE_SYSTEM_LLVM) += libLLVM libLLVM-13jl
 endif
 JL_PRIVATE_LIBS-$(USE_SYSTEM_LIBUNWIND) += libunwind
 
@@ -456,8 +456,10 @@ endif
 	-ls stdlib/srccache/*.tar.gz >> light-source-dist.tmp
 	-ls stdlib/*/StdlibArtifacts.toml >> light-source-dist.tmp
 
-	# Exclude git, github and CI config files
-	git ls-files | sed -E -e '/^\..+/d' -e '/\/\..+/d' -e '/appveyor.yml/d' >> light-source-dist.tmp
+	# Include all git-tracked filenames
+	git ls-files >> light-source-dist.tmp
+	
+	# Include documentation filenames
 	find doc/_build/html >> light-source-dist.tmp
 
 # Make tarball with only Julia code + stdlib tarballs

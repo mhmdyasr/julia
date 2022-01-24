@@ -9,12 +9,6 @@
 #undef jl_longjmp
 #endif
 
-//** Configuration options that affect the Julia ABI **//
-// if this is not defined, only individual dimension sizes are
-// stored and not total length, to save space.
-#define STORE_ARRAY_LEN
-//** End Configuration options **//
-
 #include "julia_fasttls.h"
 #include "libsupport.h"
 #include <stdint.h>
@@ -174,9 +168,7 @@ typedef struct {
 JL_EXTENSION typedef struct {
     JL_DATA_TYPE
     void *data;
-#ifdef STORE_ARRAY_LEN
     size_t length;
-#endif
     jl_array_flags_t flags;
     uint16_t elsize;  // element size including alignment (dim 1 memory stride)
     uint32_t offset;  // for 1-d only. does not need to get big.
@@ -299,6 +291,9 @@ typedef struct _jl_method_t {
     _Atomic(struct _jl_method_instance_t*) unspecialized;  // unspecialized executable method instance, or null
     jl_value_t *generator;  // executable code-generating function if available
     jl_array_t *roots;  // pointers in generated code (shared to reduce memory), or null
+    // Identify roots by module-of-origin. We only track the module for roots added during incremental compilation.
+    // May be NULL if no external roots have been added, otherwise it's a Vector{UInt64}
+    jl_array_t *root_blocks;   // RLE (build_id, offset) pairs (even/odd indexing)
     jl_svec_t *ccallable; // svec(rettype, sig) if a ccallable entry point is requested for this
 
     // cache of specializations of this method for invoke(), i.e.
@@ -415,7 +410,7 @@ typedef struct {
     struct _jl_module_t *module;
     jl_svec_t *names;  // field names
     const uint32_t *atomicfields; // if any fields are atomic, we record them here
-    //const uint32_t *constfields; // if any fields are const, we record them here
+    const uint32_t *constfields; // if any fields are const, we record them here
     // `wrapper` is either the only instantiation of the type (if no parameters)
     // or a UnionAll accepting parameters to make an instantiation.
     jl_value_t *wrapper;
@@ -539,6 +534,7 @@ typedef struct _jl_module_t {
     int8_t compile;
     int8_t infer;
     uint8_t istopmod;
+    int8_t max_methods;
     jl_mutex_t lock;
 } jl_module_t;
 
@@ -715,6 +711,7 @@ extern JL_DLLIMPORT jl_value_t *jl_array_uint8_type JL_GLOBALLY_ROOTED;
 extern JL_DLLIMPORT jl_value_t *jl_array_any_type JL_GLOBALLY_ROOTED;
 extern JL_DLLIMPORT jl_value_t *jl_array_symbol_type JL_GLOBALLY_ROOTED;
 extern JL_DLLIMPORT jl_value_t *jl_array_int32_type JL_GLOBALLY_ROOTED;
+extern JL_DLLIMPORT jl_value_t *jl_array_uint64_type JL_GLOBALLY_ROOTED;
 extern JL_DLLIMPORT jl_datatype_t *jl_expr_type JL_GLOBALLY_ROOTED;
 extern JL_DLLIMPORT jl_datatype_t *jl_globalref_type JL_GLOBALLY_ROOTED;
 extern JL_DLLIMPORT jl_datatype_t *jl_linenumbernode_type JL_GLOBALLY_ROOTED;
@@ -919,12 +916,7 @@ STATIC_INLINE jl_value_t *jl_svecset(
 }
 #endif
 
-#ifdef STORE_ARRAY_LEN
 #define jl_array_len(a)   (((jl_array_t*)(a))->length)
-#else
-JL_DLLEXPORT size_t jl_array_len_(jl_array_t *a);
-#define jl_array_len(a)   jl_array_len_((jl_array_t*)(a))
-#endif
 #define jl_array_data(a)  ((void*)((jl_array_t*)(a))->data)
 #define jl_array_dim(a,i) ((&((jl_array_t*)(a))->nrows)[i])
 #define jl_array_dim0(a)  (((jl_array_t*)(a))->nrows)
@@ -1113,7 +1105,6 @@ static inline uint32_t jl_ptr_offset(jl_datatype_t *st, int i) JL_NOTSAFEPOINT
 
 static inline int jl_field_isatomic(jl_datatype_t *st, int i) JL_NOTSAFEPOINT
 {
-    // if (!st->mutable) return 0; // TODO: is this fast-path helpful?
     const uint32_t *atomicfields = st->name->atomicfields;
     if (atomicfields != NULL) {
         if (atomicfields[i / 32] & (1 << (i % 32)))
@@ -1121,6 +1112,20 @@ static inline int jl_field_isatomic(jl_datatype_t *st, int i) JL_NOTSAFEPOINT
     }
     return 0;
 }
+
+static inline int jl_field_isconst(jl_datatype_t *st, int i) JL_NOTSAFEPOINT
+{
+    jl_typename_t *tn = st->name;
+    if (!tn->mutabl)
+        return 1;
+    const uint32_t *constfields = tn->constfields;
+    if (constfields != NULL) {
+        if (constfields[i / 32] & (1 << (i % 32)))
+            return 1;
+    }
+    return 0;
+}
+
 
 static inline int jl_is_layout_opaque(const jl_datatype_layout_t *l) JL_NOTSAFEPOINT
 {
@@ -1480,8 +1485,8 @@ JL_DLLEXPORT void        jl_set_nth_field(jl_value_t *v, size_t i, jl_value_t *r
 JL_DLLEXPORT int         jl_field_isdefined(jl_value_t *v, size_t i) JL_NOTSAFEPOINT;
 JL_DLLEXPORT jl_value_t *jl_get_field(jl_value_t *o, const char *fld);
 JL_DLLEXPORT jl_value_t *jl_value_ptr(jl_value_t *a);
-int jl_uniontype_size(jl_value_t *ty, size_t *sz) JL_NOTSAFEPOINT;
-JL_DLLEXPORT int jl_islayout_inline(jl_value_t *eltype, size_t *fsz, size_t *al) JL_NOTSAFEPOINT;
+int jl_uniontype_size(jl_value_t *ty, size_t *sz);
+JL_DLLEXPORT int jl_islayout_inline(jl_value_t *eltype, size_t *fsz, size_t *al);
 
 // arrays
 JL_DLLEXPORT jl_array_t *jl_new_array(jl_value_t *atype, jl_value_t *dims);
@@ -1516,6 +1521,7 @@ JL_DLLEXPORT void jl_array_sizehint(jl_array_t *a, size_t sz);
 JL_DLLEXPORT void jl_array_ptr_1d_push(jl_array_t *a, jl_value_t *item);
 JL_DLLEXPORT void jl_array_ptr_1d_append(jl_array_t *a, jl_array_t *a2);
 JL_DLLEXPORT jl_value_t *jl_apply_array_type(jl_value_t *type, size_t dim);
+JL_DLLEXPORT int jl_array_validate_dims(size_t *nel, size_t *tot, uint32_t ndims, size_t *dims, size_t elsz);
 // property access
 JL_DLLEXPORT void *jl_array_ptr(jl_array_t *a);
 JL_DLLEXPORT void *jl_array_eltype(jl_value_t *a);
@@ -1538,6 +1544,8 @@ JL_DLLEXPORT void jl_set_module_compile(jl_module_t *self, int value);
 JL_DLLEXPORT int jl_get_module_compile(jl_module_t *m);
 JL_DLLEXPORT void jl_set_module_infer(jl_module_t *self, int value);
 JL_DLLEXPORT int jl_get_module_infer(jl_module_t *m);
+JL_DLLEXPORT void jl_set_module_max_methods(jl_module_t *self, int value);
+JL_DLLEXPORT int jl_get_module_max_methods(jl_module_t *m);
 // get binding for reading
 JL_DLLEXPORT jl_binding_t *jl_get_binding(jl_module_t *m JL_PROPAGATES_ROOT, jl_sym_t *var);
 JL_DLLEXPORT jl_binding_t *jl_get_binding_or_error(jl_module_t *m, jl_sym_t *var);
@@ -1677,7 +1685,7 @@ JL_DLLEXPORT jl_value_t *jl_restore_incremental_from_buf(const char *buf, size_t
 
 // parsing
 JL_DLLEXPORT jl_value_t *jl_parse_all(const char *text, size_t text_len,
-                                      const char *filename, size_t filename_len);
+                                      const char *filename, size_t filename_len, size_t lineno);
 JL_DLLEXPORT jl_value_t *jl_parse_string(const char *text, size_t text_len,
                                          int offset, int greedy);
 // lowering
