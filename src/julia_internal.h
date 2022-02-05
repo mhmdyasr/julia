@@ -10,6 +10,7 @@
 #include "support/ptrhash.h"
 #include "support/strtod.h"
 #include "gc-alloc-profiler.h"
+#include "support/rle.h"
 #include <uv.h>
 #if !defined(_WIN32)
 #include <unistd.h>
@@ -528,6 +529,8 @@ void jl_resolve_globals_in_ir(jl_array_t *stmts, jl_module_t *m, jl_svec_t *spar
                               int binding_effects);
 
 JL_DLLEXPORT void jl_add_method_root(jl_method_t *m, jl_module_t *mod, jl_value_t* root);
+int get_root_reference(rle_reference *rr, jl_method_t *m, size_t i);
+jl_value_t *lookup_root(jl_method_t *m, uint64_t key, int index);
 
 int jl_valid_type_param(jl_value_t *v);
 
@@ -607,7 +610,7 @@ jl_value_t *replace_nth_field(jl_datatype_t *st, jl_value_t *v, size_t i, jl_val
 jl_expr_t *jl_exprn(jl_sym_t *head, size_t n);
 jl_function_t *jl_new_generic_function(jl_sym_t *name, jl_module_t *module);
 jl_function_t *jl_new_generic_function_with_supertype(jl_sym_t *name, jl_module_t *module, jl_datatype_t *st);
-void jl_foreach_reachable_mtable(void (*visit)(jl_methtable_t *mt, void *env), void *env);
+int jl_foreach_reachable_mtable(int (*visit)(jl_methtable_t *mt, void *env), void *env);
 void jl_init_main_module(void);
 JL_DLLEXPORT int jl_is_submodule(jl_module_t *child, jl_module_t *parent) JL_NOTSAFEPOINT;
 jl_array_t *jl_get_loaded_modules(void);
