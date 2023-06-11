@@ -3,6 +3,7 @@
 # RUN: julia --startup-file=no %s %t && llvm-link -S %t/* -o %t/module.ll
 # RUN: cat %t/module.ll | FileCheck %s
 # RUN: cat %t/module.ll | opt -enable-new-pm=0 -load libjulia-codegen%shlibext -LowerSIMDLoop -S - | FileCheck %s -check-prefix=LOWER
+# RUN: cat %t/module.ll | opt -enable-new-pm=1 --load-pass-plugin=libjulia-codegen%shlibext -passes='LowerSIMDLoop' -S - | FileCheck %s -check-prefix=LOWER
 # RUN: julia --startup-file=no %s %t -O && llvm-link -S %t/* -o %t/module.ll
 # RUN: cat %t/module.ll | FileCheck %s -check-prefix=FINAL
 
@@ -31,7 +32,7 @@ function simdf(X)
 # LOWER: fadd fast double
 # LOWER-NOT: call void @julia.loopinfo_marker()
 # LOWER: br {{.*}}, !llvm.loop [[LOOPID:![0-9]+]]
-# FINAL: fadd fast <{{[0-9]+}} x double>
+# FINAL: fadd fast <{{(vscale x )?}}{{[0-9]+}} x double>
     end
     acc
 end

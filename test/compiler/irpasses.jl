@@ -2,33 +2,11 @@
 
 using Test
 using Base.Meta
-using Core: PhiNode, SSAValue, GotoNode, PiNode, QuoteNode, ReturnNode, GotoIfNot
+import Core:
+    CodeInfo, Argument, SSAValue, GotoNode, GotoIfNot, PiNode, PhiNode,
+    QuoteNode, ReturnNode
 
-# utilities
-# =========
-
-import Core.Compiler: argextype, singleton_type
-
-argextype(@nospecialize args...) = argextype(args..., Any[])
-code_typed1(args...; kwargs...) = first(only(code_typed(args...; kwargs...)))::Core.CodeInfo
-get_code(args...; kwargs...) = code_typed1(args...; kwargs...).code
-
-# check if `x` is a statement with a given `head`
-isnew(@nospecialize x) = Meta.isexpr(x, :new)
-
-# check if `x` is a dynamic call of a given function
-iscall(y) = @nospecialize(x) -> iscall(y, x)
-function iscall((src, f)::Tuple{Core.CodeInfo,Base.Callable}, @nospecialize(x))
-    return iscall(x) do @nospecialize x
-        singleton_type(argextype(x, src)) === f
-    end
-end
-iscall(pred::Base.Callable, @nospecialize(x)) = Meta.isexpr(x, :call) && pred(x.args[1])
-
-# check if `x` is a statically-resolved call of a function whose name is `sym`
-isinvoke(y) = @nospecialize(x) -> isinvoke(y, x)
-isinvoke(sym::Symbol, @nospecialize(x)) = isinvoke(mi->mi.def.name===sym, x)
-isinvoke(pred::Function, @nospecialize(x)) = Meta.isexpr(x, :invoke) && pred(x.args[1]::Core.MethodInstance)
+include(normpath(@__DIR__, "irutils.jl"))
 
 # domsort
 # =======
@@ -36,7 +14,7 @@ isinvoke(pred::Function, @nospecialize(x)) = Meta.isexpr(x, :invoke) && pred(x.a
 ## Test that domsort doesn't mangle single-argument phis (#29262)
 let m = Meta.@lower 1 + 1
     @assert Meta.isexpr(m, :thunk)
-    src = m.args[1]::Core.CodeInfo
+    src = m.args[1]::CodeInfo
     src.code = Any[
         # block 1
         Expr(:call, :opaque),
@@ -71,7 +49,7 @@ end
 # test that we don't stack-overflow in SNCA with large functions.
 let m = Meta.@lower 1 + 1
     @assert Meta.isexpr(m, :thunk)
-    src = m.args[1]::Core.CodeInfo
+    src = m.args[1]::CodeInfo
     code = Any[]
     N = 2^15
     for i in 1:2:N
@@ -97,30 +75,87 @@ end
 # SROA
 # ====
 
+import Core.Compiler: widenconst
+
+is_load_forwarded(src::CodeInfo) = !any(iscall((src, getfield)), src.code)
+is_scalar_replaced(src::CodeInfo) =
+    is_load_forwarded(src) && !any(iscall((src, setfield!)), src.code) && !any(isnew, src.code)
+
+function is_load_forwarded(@nospecialize(T), src::CodeInfo)
+    for i in 1:length(src.code)
+        x = src.code[i]
+        if iscall((src, getfield), x)
+            widenconst(argextype(x.args[1], src)) <: T && return false
+        end
+    end
+    return true
+end
+function is_scalar_replaced(@nospecialize(T), src::CodeInfo)
+    is_load_forwarded(T, src) || return false
+    for i in 1:length(src.code)
+        x = src.code[i]
+        if iscall((src, setfield!), x)
+            widenconst(argextype(x.args[1], src)) <: T && return false
+        elseif isnew(x)
+            widenconst(argextype(SSAValue(i), src)) <: T && return false
+        end
+    end
+    return true
+end
+
 struct ImmutableXYZ; x; y; z; end
 mutable struct MutableXYZ; x; y; z; end
+struct ImmutableOuter{T}; x::T; y::T; z::T; end
+mutable struct MutableOuter{T}; x::T; y::T; z::T; end
+struct ImmutableRef{T}; x::T; end
+Base.getindex(r::ImmutableRef) = r.x
+mutable struct SafeRef{T}; x::T; end
+Base.getindex(s::SafeRef) = getfield(s, 1)
+Base.setindex!(s::SafeRef, x) = setfield!(s, 1, x)
 
-# should optimize away very basic cases
+# simple immutability
+# -------------------
+
 let src = code_typed1((Any,Any,Any)) do x, y, z
         xyz = ImmutableXYZ(x, y, z)
         xyz.x, xyz.y, xyz.z
     end
-    @test !any(isnew, src.code)
+    @test is_scalar_replaced(src)
+    @test any(src.code) do @nospecialize x
+        iscall((src, tuple), x) &&
+        x.args[2:end] == Any[#=x=# Core.Argument(2), #=y=# Core.Argument(3), #=z=# Core.Argument(4)]
+    end
 end
+let src = code_typed1((Any,Any,Any)) do x, y, z
+        xyz = (x, y, z)
+        xyz[1], xyz[2], xyz[3]
+    end
+    @test is_scalar_replaced(src)
+    @test any(src.code) do @nospecialize x
+        iscall((src, tuple), x) &&
+        x.args[2:end] == Any[#=x=# Core.Argument(2), #=y=# Core.Argument(3), #=z=# Core.Argument(4)]
+    end
+end
+
+# simple mutability
+# -----------------
+
 let src = code_typed1((Any,Any,Any)) do x, y, z
         xyz = MutableXYZ(x, y, z)
         xyz.x, xyz.y, xyz.z
     end
-    @test !any(isnew, src.code)
+    @test is_scalar_replaced(src)
+    @test any(src.code) do @nospecialize x
+        iscall((src, tuple), x) &&
+        x.args[2:end] == Any[#=x=# Core.Argument(2), #=y=# Core.Argument(3), #=z=# Core.Argument(4)]
+    end
 end
-
-# should handle simple mutabilities
 let src = code_typed1((Any,Any,Any)) do x, y, z
         xyz = MutableXYZ(x, y, z)
         xyz.y = 42
         xyz.x, xyz.y, xyz.z
     end
-    @test !any(isnew, src.code)
+    @test is_scalar_replaced(src)
     @test any(src.code) do @nospecialize x
         iscall((src, tuple), x) &&
         x.args[2:end] == Any[#=x=# Core.Argument(2), 42, #=x=# Core.Argument(4)]
@@ -131,19 +166,23 @@ let src = code_typed1((Any,Any,Any)) do x, y, z
         xyz.x, xyz.z = xyz.z, xyz.x
         xyz.x, xyz.y, xyz.z
     end
-    @test !any(isnew, src.code)
+    @test is_scalar_replaced(src)
     @test any(src.code) do @nospecialize x
         iscall((src, tuple), x) &&
         x.args[2:end] == Any[#=z=# Core.Argument(4), #=y=# Core.Argument(3), #=x=# Core.Argument(2)]
     end
 end
-# circumvent uninitialized fields as far as there is a solid `setfield!` definition
+
+# uninitialized fields
+# --------------------
+
+# safe cases
 let src = code_typed1() do
         r = Ref{Any}()
         r[] = 42
         return r[]
     end
-    @test !any(isnew, src.code)
+    @test is_scalar_replaced(src)
 end
 let src = code_typed1((Bool,)) do cond
         r = Ref{Any}()
@@ -155,7 +194,7 @@ let src = code_typed1((Bool,)) do cond
             return r[]
         end
     end
-    @test !any(isnew, src.code)
+    @test is_scalar_replaced(src)
 end
 let src = code_typed1((Bool,)) do cond
         r = Ref{Any}()
@@ -166,7 +205,7 @@ let src = code_typed1((Bool,)) do cond
         end
         return r[]
     end
-    @test !any(isnew, src.code)
+    @test is_scalar_replaced(src)
 end
 let src = code_typed1((Bool,Bool,Any,Any,Any)) do c1, c2, x, y, z
         r = Ref{Any}()
@@ -181,7 +220,16 @@ let src = code_typed1((Bool,Bool,Any,Any,Any)) do c1, c2, x, y, z
         end
         return r[]
     end
-    @test !any(isnew, src.code)
+    @test is_scalar_replaced(src)
+end
+
+# unsafe cases
+let src = code_typed1() do
+        r = Ref{Any}()
+        return r[]
+    end
+    @test count(isnew, src.code) == 1
+    @test count(iscall((src, getfield)), src.code) == 1
 end
 let src = code_typed1((Bool,)) do cond
         r = Ref{Any}()
@@ -191,7 +239,9 @@ let src = code_typed1((Bool,)) do cond
         return r[]
     end
     # N.B. `r` should be allocated since `cond` might be `false` and then it will be thrown
-    @test any(isnew, src.code)
+    @test count(isnew, src.code) == 1
+    @test count(iscall((src, setfield!)), src.code) == 1
+    @test count(iscall((src, getfield)), src.code) == 1
 end
 let src = code_typed1((Bool,Bool,Any,Any)) do c1, c2, x, y
         r = Ref{Any}()
@@ -205,12 +255,16 @@ let src = code_typed1((Bool,Bool,Any,Any)) do c1, c2, x, y
         return r[]
     end
     # N.B. `r` should be allocated since `c2` might be `false` and then it will be thrown
-    @test any(isnew, src.code)
+    @test count(isnew, src.code) == 1
+    @test count(iscall((src, setfield!)), src.code) == 2
+    @test count(iscall((src, getfield)), src.code) == 1
 end
 
-# should include a simple alias analysis
-struct ImmutableOuter{T}; x::T; y::T; z::T; end
-mutable struct MutableOuter{T}; x::T; y::T; z::T; end
+# aliased load forwarding
+# -----------------------
+# TODO fix broken examples with EscapeAnalysis
+
+# OK: immutable(immutable(...)) case
 let src = code_typed1((Any,Any,Any)) do x, y, z
         xyz = ImmutableXYZ(x, y, z)
         outer = ImmutableOuter(xyz, xyz, xyz)
@@ -238,22 +292,21 @@ let src = code_typed1((Any,Any,Any)) do x, y, z
     end
 end
 
-# FIXME our analysis isn't yet so powerful at this moment: may be unable to handle nested objects well
-# OK: mutable(immutable(...)) case
+# OK (mostly): immutable(mutable(...)) case
 let src = code_typed1((Any,Any,Any)) do x, y, z
         xyz = MutableXYZ(x, y, z)
         t   = (xyz,)
         v = t[1].x
         v, v, v
     end
-    @test !any(isnew, src.code)
+    @test is_scalar_replaced(src)
 end
 let src = code_typed1((Any,Any,Any)) do x, y, z
         xyz = MutableXYZ(x, y, z)
         outer = ImmutableOuter(xyz, xyz, xyz)
         outer.x.x, outer.y.y, outer.z.z
     end
-    @test !any(isnew, src.code)
+    @test is_scalar_replaced(src)
     @test any(src.code) do @nospecialize x
         iscall((src, tuple), x) &&
         x.args[2:end] == Any[#=x=# Core.Argument(2), #=y=# Core.Argument(3), #=y=# Core.Argument(4)]
@@ -264,12 +317,27 @@ let # this is a simple end to end test case, which demonstrates allocation elimi
     # NOTE this test case isn't so robust and might be subject to future changes of the broadcasting implementation,
     # in that case you don't really need to stick to keeping this test case around
     simple_sroa(s) = broadcast(identity, Ref(s))
+    let src = code_typed1(simple_sroa, (String,))
+        @test is_scalar_replaced(src)
+    end
     s = Base.inferencebarrier("julia")::String
     simple_sroa(s)
     # NOTE don't hard-code `"julia"` in `@allocated` clause and make sure to execute the
     # compiled code for `simple_sroa`, otherwise everything can be folded even without SROA
     @test @allocated(simple_sroa(s)) == 0
 end
+let # FIXME: some nested example
+    src = code_typed1((Int,)) do x
+        Ref(Ref(x))[][]
+    end
+    @test_broken is_scalar_replaced(src)
+
+    src = code_typed1((Int,)) do x
+        Ref(Ref(Ref(Ref(Ref(Ref(Ref(Ref(Ref(Ref((x)))))))))))[][][][][][][][][][]
+    end
+    @test_broken is_scalar_replaced(src)
+end
+
 # FIXME: immutable(mutable(...)) case
 let src = code_typed1((Any,Any,Any)) do x, y, z
         xyz = ImmutableXYZ(x, y, z)
@@ -319,6 +387,22 @@ let # should work with constant globals
     @test count(isnew, src.code) == 0
 end
 
+# don't SROA statement that may throw
+# https://github.com/JuliaLang/julia/issues/48067
+function issue48067(a::Int, b)
+   r = Ref(a)
+   try
+       setfield!(r, :x, b)
+       nothing
+   catch err
+       getfield(r, :x)
+   end
+end
+let src = code_typed1(issue48067, (Int,String))
+    @test any(iscall((src, setfield!)), src.code)
+end
+@test issue48067(42, "julia") == 42
+
 # should work nicely with inlining to optimize away a complicated case
 # adapted from http://wiki.luajit.org/Allocation-Sinking-Optimization#implementation%5B
 struct Point
@@ -338,10 +422,122 @@ let src = code_typed1(compute_points)
     @test !any(isnew, src.code)
 end
 
+# preserve elimination
+# --------------------
+
+function ispreserved(@nospecialize(x))
+    return function (@nospecialize(stmt),)
+        if Meta.isexpr(stmt, :foreigncall)
+            nccallargs = length(stmt.args[3]::Core.SimpleVector)
+            for pidx = (6+nccallargs):length(stmt.args)
+                if stmt.args[pidx] === x
+                    return true
+                end
+            end
+        end
+        return false
+    end
+end
+
+let src = code_typed1((String,)) do s
+        ccall(:some_ccall, Cint, (Ptr{String},), Ref(s))
+    end
+    @test count(isnew, src.code) == 0
+    @test any(ispreserved(#=s=#Core.Argument(2)), src.code)
+end
+
+# if the mutable struct is directly used, we shouldn't eliminate it
+let src = code_typed1() do
+        a = MutableXYZ(-512275808,882558299,-2133022131)
+        b = Int32(42)
+        ccall(:some_ccall, Cvoid, (MutableXYZ, Int32), a, b)
+        return a.x
+    end
+    @test count(isnew, src.code) == 1
+end
+
+# should eliminate allocation whose address isn't taked even if it has uninitialized field(s)
+mutable struct BadRef
+    x::String
+    y::String
+    BadRef(x) = new(x)
+end
+Base.cconvert(::Type{Ptr{BadRef}}, a::String) = BadRef(a)
+Base.unsafe_convert(::Type{Ptr{BadRef}}, ar::BadRef) = Ptr{BadRef}(pointer_from_objref(ar.x))
+let src = code_typed1((String,)) do s
+        ccall(:jl_breakpoint, Cvoid, (Ptr{BadRef},), s)
+    end
+    @test count(isnew, src.code) == 0
+    @test any(ispreserved(#=s=#Core.Argument(2)), src.code)
+end
+
+# isdefined elimination
+# ---------------------
+
+let src = code_typed1((Any,)) do a
+        r = Ref{Any}()
+        r[] = a
+        if isassigned(r)
+            return r[]
+        end
+        return nothing
+    end
+    @test is_scalar_replaced(src)
+end
+
+let src = code_typed1((Bool, Any,)) do cnd, a
+        r = Ref{Any}()
+        if cnd
+            r[] = a # this `setfield!` shouldn't be eliminated
+        end
+        return isassigned(r)
+    end
+    @test count(isnew, src.code) == 1
+    @test count(iscall((src, setfield!)), src.code) == 1
+end
+
+callit(f, args...) = f(args...)
+function isdefined_elim()
+    local arr::Vector{Any}
+    callit() do
+        arr = Any[]
+    end
+    return arr
+end
+let src = code_typed1(isdefined_elim)
+    @test is_scalar_replaced(src)
+end
+@test isdefined_elim() == Any[]
+
+function abmult(r::Int, x0)
+    if r < 0
+        r = -r
+    end
+    f = x -> x * r
+    return @inline f(x0)
+end
+let src = code_typed1(abmult, (Int,Int))
+    @test is_scalar_replaced(src)
+end
+@test abmult(-3, 3) == 9
+
+function abmult2(r0::Int, x0)
+    r::Int = r0
+    if r < 0
+        r = -r
+    end
+    f = x -> x * r
+    return f(x0)
+end
+let src = code_typed1(abmult2, (Int,Int))
+    @test is_scalar_replaced(src)
+end
+@test abmult2(-3, 3) == 9
+
 # comparison lifting
 # ==================
 
-let # lifting `===`
+let # lifting `===` through PhiNode
     src = code_typed1((Bool,Int,)) do c, x
         y = c ? x : nothing
         y === nothing # => ϕ(false, true)
@@ -361,7 +557,15 @@ let # lifting `===`
     end
 end
 
-let # lifting `isa`
+let # lifting `===` through Core.ifelse
+    src = code_typed1((Bool,Int,)) do c, x
+        y = Core.ifelse(c, x, nothing)
+        y === nothing # => Core.ifelse(c, false, true)
+    end
+    @test count(iscall((src, ===)), src.code) == 0
+end
+
+let # lifting `isa` through PhiNode
     src = code_typed1((Bool,Int,)) do c, x
         y = c ? x : nothing
         isa(y, Int) # => ϕ(true, false)
@@ -384,7 +588,16 @@ let # lifting `isa`
     end
 end
 
-let # lifting `isdefined`
+let # lifting `isa` through Core.ifelse
+    src = code_typed1((Bool,Int,)) do c, x
+        y = Core.ifelse(c, x, nothing)
+        isa(y, Int) # => Core.ifelse(c, true, false)
+    end
+    @test count(iscall((src, isa)), src.code) == 0
+end
+
+
+let # lifting `isdefined` through PhiNode
     src = code_typed1((Bool,Some{Int},)) do c, x
         y = c ? x : nothing
         isdefined(y, 1) # => ϕ(true, false)
@@ -405,6 +618,14 @@ let # lifting `isdefined`
     @test !any(src.code) do @nospecialize x
         iscall((src, isdefined), x) && argextype(x.args[2], src) isa Union
     end
+end
+
+let # lifting `isdefined` through Core.ifelse
+    src = code_typed1((Bool,Some{Int},)) do c, x
+        y = Core.ifelse(c, x, nothing)
+        isdefined(y, 1) # => Core.ifelse(c, true, false)
+    end
+    @test count(iscall((src, isdefined)), src.code) == 0
 end
 
 mutable struct Foo30594; x::Float64; end
@@ -473,14 +694,12 @@ struct FooPartial
     global f_partial
     f_partial(x) = new(x, 2).x
 end
-let ci = code_typed(f_partial, Tuple{Float64})[1].first
-    @test length(ci.code) == 1 && isa(ci.code[1], ReturnNode)
-end
+@test fully_eliminated(f_partial, Tuple{Float64})
 
 # A SSAValue after the compaction line
 let m = Meta.@lower 1 + 1
     @assert Meta.isexpr(m, :thunk)
-    src = m.args[1]::Core.CodeInfo
+    src = m.args[1]::CodeInfo
     src.code = Any[
         # block 1
         nothing,
@@ -514,9 +733,10 @@ let m = Meta.@lower 1 + 1
         Any
     ]
     nstmts = length(src.code)
-    src.codelocs = fill(Int32(1), nstmts)
-    src.ssaflags = fill(Int32(0), nstmts)
-    ir = Core.Compiler.inflate_ir(src, Any[], Any[Any, Any])
+    src.codelocs = fill(one(Int32), nstmts)
+    src.ssaflags = fill(one(Int32), nstmts)
+    src.slotflags = fill(zero(UInt8), 3)
+    ir = Core.Compiler.inflate_ir(src)
     @test Core.Compiler.verify_ir(ir) === nothing
     ir = @test_nowarn Core.Compiler.sroa_pass!(ir)
     @test Core.Compiler.verify_ir(ir) === nothing
@@ -543,7 +763,7 @@ end
 let m = Meta.@lower 1 + 1
     # Test that CFG simplify combines redundant basic blocks
     @assert Meta.isexpr(m, :thunk)
-    src = m.args[1]::Core.CodeInfo
+    src = m.args[1]::CodeInfo
     src.code = Any[
         Core.Compiler.GotoNode(2),
         Core.Compiler.GotoNode(3),
@@ -565,10 +785,98 @@ let m = Meta.@lower 1 + 1
     @test length(ir.cfg.blocks) == 1 && Core.Compiler.length(ir.stmts) == 1
 end
 
+# Test cfg_simplify in complicated sequences of dropped and merged bbs
+using Core.Compiler: Argument, IRCode, GotoNode, GotoIfNot, ReturnNode, NoCallInfo, BasicBlock, StmtRange, SSAValue
+bb_term(ir, bb) = Core.Compiler.getindex(ir, SSAValue(Core.Compiler.last(ir.cfg.blocks[bb].stmts)))[:inst]
+
+function each_stmt_a_bb(stmts, preds, succs)
+    ir = IRCode()
+    empty!(ir.stmts.inst)
+    append!(ir.stmts.inst, stmts)
+    empty!(ir.stmts.type); append!(ir.stmts.type, [Nothing for _ = 1:length(stmts)])
+    empty!(ir.stmts.flag); append!(ir.stmts.flag, [0x0 for _ = 1:length(stmts)])
+    empty!(ir.stmts.line); append!(ir.stmts.line, [Int32(0) for _ = 1:length(stmts)])
+    empty!(ir.stmts.info); append!(ir.stmts.info, [NoCallInfo() for _ = 1:length(stmts)])
+    empty!(ir.cfg.blocks); append!(ir.cfg.blocks, [BasicBlock(StmtRange(i, i), preds[i], succs[i]) for i = 1:length(stmts)])
+    Core.Compiler.verify_ir(ir)
+    return ir
+end
+
+for gotoifnot in (false, true)
+    stmts = [
+        # BB 1
+        GotoIfNot(Argument(1), 8),
+        # BB 2
+        GotoIfNot(Argument(2), 4),
+        # BB 3
+        GotoNode(9),
+        # BB 4
+        GotoIfNot(Argument(3), 10),
+        # BB 5
+        GotoIfNot(Argument(4), 11),
+        # BB 6
+        GotoIfNot(Argument(5), 12),
+        # BB 7
+        GotoNode(13),
+        # BB 8
+        ReturnNode(1),
+        # BB 9
+        nothing,
+        # BB 10
+        nothing,
+        # BB 11
+        gotoifnot ? GotoIfNot(Argument(6), 13) : GotoNode(13),
+        # BB 12
+        ReturnNode(2),
+        # BB 13
+        ReturnNode(3),
+    ]
+    preds = Vector{Int}[Int[], [1], [2], [2], [4], [5], [6], [1], [3], [4, 9], [5, 10], gotoifnot ? [6,11] : [6], [7, 11]]
+    succs = Vector{Int}[[2, 8], [3, 4], [9], [5, 10], [6, 11], [7, 12], [13], Int[], [10], [11], gotoifnot ? [12, 13] : [13], Int[], Int[]]
+    ir = each_stmt_a_bb(stmts, preds, succs)
+    ir = Core.Compiler.cfg_simplify!(ir)
+    Core.Compiler.verify_ir(ir)
+
+    if gotoifnot
+        let term4 = bb_term(ir, 4), term5 = bb_term(ir, 5)
+            @test isa(term4, GotoIfNot) && bb_term(ir, term4.dest).val == 3
+            @test isa(term5, ReturnNode) && term5.val == 2
+        end
+    else
+        @test length(ir.cfg.blocks) == 10
+        let term = bb_term(ir, 3)
+            @test isa(term, GotoNode) && bb_term(ir, term.label).val == 3
+        end
+    end
+end
+
+let stmts = [
+        # BB 1
+        GotoIfNot(Argument(1), 4),
+        # BB 2
+        GotoIfNot(Argument(2), 5),
+        # BB 3
+        GotoNode(5),
+        # BB 4
+        ReturnNode(1),
+        # BB 5
+        ReturnNode(2)
+    ]
+    preds = Vector{Int}[Int[], [1], [2], [1], [2, 3]]
+    succs = Vector{Int}[[2, 4], [3, 5], [5], Int[], Int[]]
+    ir = each_stmt_a_bb(stmts, preds, succs)
+    ir = Core.Compiler.cfg_simplify!(ir)
+    Core.Compiler.verify_ir(ir)
+
+    @test length(ir.cfg.blocks) == 4
+    terms = map(i->bb_term(ir, i), 1:length(ir.cfg.blocks))
+    @test Set(term.val for term in terms if isa(term, ReturnNode)) == Set([1,2])
+end
+
 let m = Meta.@lower 1 + 1
     # Test that CFG simplify doesn't mess up when chaining past return blocks
     @assert Meta.isexpr(m, :thunk)
-    src = m.args[1]::Core.CodeInfo
+    src = m.args[1]::CodeInfo
     src.code = Any[
         Core.Compiler.GotoIfNot(Core.Compiler.Argument(2), 3),
         Core.Compiler.GotoNode(4),
@@ -598,7 +906,7 @@ let m = Meta.@lower 1 + 1
     # Test that CFG simplify doesn't try to merge every block in a loop into
     # its predecessor
     @assert Meta.isexpr(m, :thunk)
-    src = m.args[1]::Core.CodeInfo
+    src = m.args[1]::CodeInfo
     src.code = Any[
         # Block 1
         Core.Compiler.GotoNode(2),
@@ -616,6 +924,21 @@ let m = Meta.@lower 1 + 1
     ir = Core.Compiler.cfg_simplify!(ir)
     Core.Compiler.verify_ir(ir)
     @test length(ir.cfg.blocks) == 1
+end
+
+# `cfg_simplify!` shouldn't error in a presence of `try/catch` block
+let ir = Base.code_ircode(; optimize_until="slot2ssa") do
+        v = try
+        catch
+        end
+        v
+    end |> only |> first
+    Core.Compiler.verify_ir(ir)
+    nb = length(ir.cfg.blocks)
+    ir = Core.Compiler.cfg_simplify!(ir)
+    Core.Compiler.verify_ir(ir)
+    na = length(ir.cfg.blocks)
+    @test na < nb
 end
 
 # Issue #29213
@@ -657,11 +980,7 @@ function no_op_refint(r)
     r[]
     return
 end
-let code = code_typed(no_op_refint,Tuple{Base.RefValue{Int}})[1].first.code
-    @test length(code) == 1
-    @test isa(code[1], Core.ReturnNode)
-    @test code[1].val === nothing
-end
+@test fully_eliminated(no_op_refint,Tuple{Base.RefValue{Int}}; retval=nothing)
 
 # check getfield elim handling of GlobalRef
 const _some_coeffs = (1,[2],3,4)
@@ -759,8 +1078,8 @@ let
         end |> only |> first
     end
 
-    refs = map(Core.SSAValue, findall(x->x isa Expr && x.head == :new, src.code))
-    some_ccall = findfirst(x -> x isa Expr && x.head == :foreigncall && x.args[1] == :(:some_ccall), src.code)
+    refs = map(Core.SSAValue, findall(@nospecialize(x)->Meta.isexpr(x, :new), src.code))
+    some_ccall = findfirst(@nospecialize(x) -> Meta.isexpr(x, :foreigncall) && x.args[1] == :(:some_ccall), src.code)
     @assert some_ccall !== nothing
     stmt = src.code[some_ccall]
     nccallargs = length(stmt.args[3]::Core.SimpleVector)
@@ -773,52 +1092,43 @@ end
 # test `stmt_effect_free` and DCE
 # ===============================
 
-function fully_eliminated(f, args)
-    @nospecialize f args
-    let code = code_typed(f, args)[1][1].code
-        return length(code) == 1 && isa(code[1], ReturnNode)
-    end
-end
-function fully_eliminated(f, args, retval)
-    @nospecialize f args
-    let code = code_typed(f, args)[1][1].code
-        return length(code) == 1 && isa(code[1], ReturnNode) && code[1].val == retval
-    end
-end
-
 let # effect-freeness computation for array allocation
 
     # should eliminate dead allocations
-    good_dims = (0, 2)
-    for dim in good_dims, N in 0:10
+    good_dims = @static Int === Int64 ? (1:10) : (1:8)
+    Ns = @static Int === Int64 ? (1:10) : (1:8)
+    for dim = good_dims, N = Ns
         dims = ntuple(i->dim, N)
-        @eval @test fully_eliminated(()) do
+        @test @eval fully_eliminated() do
             Array{Int,$N}(undef, $(dims...))
             nothing
         end
     end
 
-    # shouldn't eliminate errorneous dead allocations
-    bad_dims = [-1,           # should keep "invalid Array dimensions"
-                typemax(Int)] # should keep "invalid Array size"
+    # shouldn't eliminate erroneous dead allocations
+    bad_dims = [-1, typemax(Int)]
     for dim in bad_dims, N in 1:10
         dims = ntuple(i->dim, N)
-        @eval @test !fully_eliminated(()) do
+        @test @eval !fully_eliminated() do
+            Array{Int,$N}(undef, $(dims...))
+            nothing
+        end
+        @test_throws "invalid Array" @eval let
             Array{Int,$N}(undef, $(dims...))
             nothing
         end
     end
 
     # some high-level examples
-    @test fully_eliminated(()) do
+    @test fully_eliminated() do
         Int[]
         nothing
     end
-    @test fully_eliminated(()) do
+    @test fully_eliminated() do
         Matrix{Tuple{String,String}}(undef, 4, 4)
         nothing
     end
-    @test fully_eliminated(()) do
+    @test fully_eliminated() do
         IdDict{Any,Any}()
         nothing
     end
@@ -874,3 +1184,89 @@ let ci = code_typed(foo_cfg_empty, Tuple{Bool}, optimize=true)[1][1]
     @test length(ir.cfg.blocks) <= 2
     @test isa(ir.stmts[length(ir.stmts)][:inst], ReturnNode)
 end
+
+@test Core.Compiler.is_effect_free(Base.infer_effects(getfield, (Complex{Int}, Symbol)))
+@test Core.Compiler.is_effect_free(Base.infer_effects(getglobal, (Module, Symbol)))
+
+# Test that UseRefIterator gets SROA'd inside of new_to_regular (#44557)
+# expression and new_to_regular offset are arbitrary here, we just want to see the UseRefIterator erased
+let e = Expr(:call, Core.GlobalRef(Base, :arrayset), false, Core.SSAValue(4), Core.SSAValue(9), Core.SSAValue(8))
+    new_to_reg(expr) = Core.Compiler.new_to_regular(expr, 1)
+    @allocated new_to_reg(e) # warmup call
+    @test (@allocated new_to_reg(e)) == 0
+end
+
+# Test that SROA doesn't try to forward a previous iteration's SSA value
+let sroa_no_forward() = begin
+    res = (0, 0)
+    for i in 1:5
+        a = first(res)
+        a == 5 && error()
+        if i == 1
+            res = (i, 2.0)
+        end
+    end
+    return res
+    end
+    @test sroa_no_forward() == (1, 2.0)
+end
+
+@noinline function foo_defined_last_iter(n::Int)
+    local x
+    for i = 1:n
+        if i == 5
+            x = 1
+        end
+    end
+    if n > 2
+        return x + n
+    end
+    return 0
+end
+const_call_defined_last_iter() = foo_defined_last_iter(3)
+@test foo_defined_last_iter(2) == 0
+@test_throws UndefVarError foo_defined_last_iter(3)
+@test_throws UndefVarError const_call_defined_last_iter()
+@test foo_defined_last_iter(6) == 7
+
+let src = code_typed1(foo_defined_last_iter, Tuple{Int})
+    for i = 1:length(src.code)
+        e = src.code[i]
+        if isexpr(e, :throw_undef_if_not)
+            @assert !isa(e.args[2], Bool)
+        end
+    end
+end
+
+# Issue #47180, incorrect phi counts in CmdRedirect
+function a47180(b; stdout )
+    c = setenv(b, b.env)
+    if true
+        c = pipeline(c, stdout)
+    end
+    c
+end
+@test isa(a47180(``; stdout), Base.AbstractCmd)
+
+# Test that _compute_sparams can be eliminated for NamedTuple
+named_tuple_elim(name::Symbol, result) = NamedTuple{(name,)}(result)
+let src = code_typed1(named_tuple_elim, Tuple{Symbol, Tuple})
+    @test count(iscall((src, Core._compute_sparams)), src.code) == 0 &&
+          count(iscall((src, Core._svec_ref)), src.code) == 0 &&
+          count(iscall(x->!isa(argextype(x, src).val, Core.Builtin)), src.code) == 0
+end
+
+# Test that sroa works if the struct type is a PartialStruct
+mutable struct OneConstField
+    const a::Int
+    b::Int
+end
+
+@eval function one_const_field_partial()
+    # Use explicit :new here to avoid inlining messing with the type
+    strct = $(Expr(:new, OneConstField, 1, 2))
+    strct.b = 4
+    strct.b = 5
+    return strct.b
+end
+@test fully_eliminated(one_const_field_partial; retval=5)

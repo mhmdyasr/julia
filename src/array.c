@@ -500,15 +500,17 @@ JL_DLLEXPORT jl_value_t *jl_alloc_string(size_t len)
         int pool_id = jl_gc_szclass_align8(allocsz);
         jl_gc_pool_t *p = &ptls->heap.norm_pools[pool_id];
         int osize = jl_gc_sizeclasses[pool_id];
-        s = jl_gc_pool_alloc(ptls, (char*)p - (char*)ptls, osize);
+        // We call `jl_gc_pool_alloc_noinline` instead of `jl_gc_pool_alloc` to avoid double-counting in
+        // the Allocations Profiler. (See https://github.com/JuliaLang/julia/pull/43868 for more details.)
+        s = jl_gc_pool_alloc_noinline(ptls, (char*)p - (char*)ptls, osize);
     }
     else {
         if (allocsz < sz) // overflow in adding offs, size was "negative"
             jl_throw(jl_memory_exception);
-        s = jl_gc_big_alloc(ptls, allocsz);
+        s = jl_gc_big_alloc_noinline(ptls, allocsz);
     }
-    jl_set_typeof(s, jl_string_type);
-    maybe_record_alloc_to_profile(s, len);
+    jl_set_typetagof(s, jl_string_tag, 0);
+    maybe_record_alloc_to_profile(s, len, jl_string_type);
     *(size_t*)s = len;
     jl_string_data(s)[len] = 0;
     return s;
@@ -615,7 +617,7 @@ JL_DLLEXPORT void jl_arrayset(jl_array_t *a JL_ROOTING_ARGUMENT, jl_value_t *rhs
         arrayassign_safe(hasptr, jl_array_owner(a), &((char*)a->data)[i * a->elsize], rhs, a->elsize);
     }
     else {
-        jl_atomic_store_relaxed(((_Atomic(jl_value_t*)*)a->data) + i, rhs);
+        jl_atomic_store_release(((_Atomic(jl_value_t*)*)a->data) + i, rhs);
         jl_gc_wb(jl_array_owner(a), rhs);
     }
 }
@@ -1159,7 +1161,7 @@ JL_DLLEXPORT void jl_array_sizehint(jl_array_t *a, size_t sz)
     if (sz <= a->maxsize) {
         size_t dec = a->maxsize - sz;
         //if we don't save at least an eighth of maxsize then its not worth it to shrink
-        if (dec < a->maxsize / 8) return;
+        if (dec <= a->maxsize / 8) return;
         jl_array_shrink(a, dec);
     }
     else {
@@ -1196,7 +1198,7 @@ static NOINLINE ssize_t jl_array_ptr_copy_forward(jl_value_t *owner,
     _Atomic(void*) *dest_pa = (_Atomic(void*)*)dest_p;
     for (ssize_t i = 0; i < n; i++) {
         void *val = jl_atomic_load_relaxed(src_pa + i);
-        jl_atomic_store_relaxed(dest_pa + i, val);
+        jl_atomic_store_release(dest_pa + i, val);
         // `val` is young or old-unmarked
         if (val && !(jl_astaggedvalue(val)->bits.gc & GC_MARKED)) {
             jl_gc_queue_root(owner);
@@ -1214,7 +1216,7 @@ static NOINLINE ssize_t jl_array_ptr_copy_backward(jl_value_t *owner,
     _Atomic(void*) *dest_pa = (_Atomic(void*)*)dest_p;
     for (ssize_t i = 0; i < n; i++) {
         void *val = jl_atomic_load_relaxed(src_pa + n - i - 1);
-        jl_atomic_store_relaxed(dest_pa + n - i - 1, val);
+        jl_atomic_store_release(dest_pa + n - i - 1, val);
         // `val` is young or old-unmarked
         if (val && !(jl_astaggedvalue(val)->bits.gc & GC_MARKED)) {
             jl_gc_queue_root(owner);
@@ -1253,7 +1255,7 @@ JL_DLLEXPORT void jl_array_ptr_copy(jl_array_t *dest, void **dest_p,
 
 JL_DLLEXPORT void jl_array_ptr_1d_push(jl_array_t *a, jl_value_t *item)
 {
-    assert(jl_typeis(a, jl_array_any_type));
+    assert(jl_typetagis(a, jl_array_any_type));
     jl_array_grow_end(a, 1);
     size_t n = jl_array_nrows(a);
     jl_array_ptr_set(a, n - 1, item);
@@ -1261,8 +1263,8 @@ JL_DLLEXPORT void jl_array_ptr_1d_push(jl_array_t *a, jl_value_t *item)
 
 JL_DLLEXPORT void jl_array_ptr_1d_append(jl_array_t *a, jl_array_t *a2)
 {
-    assert(jl_typeis(a, jl_array_any_type));
-    assert(jl_typeis(a2, jl_array_any_type));
+    assert(jl_typetagis(a, jl_array_any_type));
+    assert(jl_typetagis(a2, jl_array_any_type));
     size_t i;
     size_t n = jl_array_nrows(a);
     size_t n2 = jl_array_nrows(a2);
