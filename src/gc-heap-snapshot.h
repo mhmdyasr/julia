@@ -35,6 +35,7 @@ void _gc_heap_snapshot_record_finlist(jl_value_t *finlist, size_t index) JL_NOTS
 
 extern int gc_heap_snapshot_enabled;
 extern int prev_sweep_full;
+extern jl_mutex_t heapsnapshot_lock;
 
 int gc_slot_to_fieldidx(void *_obj, void *slot, jl_datatype_t *vt) JL_NOTSAFEPOINT;
 int gc_slot_to_arrayidx(void *_obj, void *begin) JL_NOTSAFEPOINT;
@@ -121,7 +122,7 @@ static inline void gc_heap_snapshot_record_finlist(jl_value_t *finlist, size_t i
 // Functions to call from Julia to take heap snapshot
 // ---------------------------------------------------------------------
 JL_DLLEXPORT void jl_gc_take_heap_snapshot(ios_t *nodes, ios_t *edges,
-    ios_t *strings, ios_t *json, char all_one);
+    ios_t *strings, ios_t *json, char all_one, char redact_data);
 
 
 #ifdef __cplusplus
